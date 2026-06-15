@@ -29,7 +29,6 @@ def find_mc_samples(infile):
     samples = [k for k in input_tools.read_keys(infile) if k != "meta_info"]
     return [s for s in samples if not s.startswith("SingleMuon")]
 
-
 def sum_hists(infile, samples, histname):
     hsum = None
 
@@ -73,7 +72,6 @@ def get_charge_hists(infile, mode):
 
 def unroll(h2d):
     return hh.unrolledHist(h2d, obs=["mu_pt", "abs_mu_eta"])
-
 
 def last_nonzero_bin(*hists):
     last = 0
@@ -122,7 +120,7 @@ def draw_panel(ax, h2d, charge_label, source_label):
     return h
 
 
-def make_plot(infile, outdir, mode, lumi, com):
+def make_plot(infile, outdir, mode, lumi, com, xlim):
     os.makedirs(outdir, exist_ok=True)
 
     h_minus_2d, h_plus_2d, source_label = get_charge_hists(infile, mode)
@@ -149,10 +147,8 @@ def make_plot(infile, outdir, mode, lumi, com):
         source_label,
     )
 
-    xmax = last_nonzero_bin(h_minus, h_plus) + 5
-
     axes[0].set_xticklabels([])
-    axes[1].set_xlim(0, xmax)
+    axes[1].set_xlim(*xlim)
     axes[1].set_xlabel(r"Reco $(p_T^\mu, |\eta^\mu|)$ bin", fontsize=14)
     axes[1].xaxis.set_major_locator(plt.MaxNLocator(8))
 
@@ -179,10 +175,18 @@ def main():
     parser.add_argument("--mode", choices=["data", "mc"], default="mc")
     parser.add_argument("--lumi", type=float, default=0.300, help="Luminosity in fb^-1")
     parser.add_argument("--com", default="5.02", help="Center-of-mass energy in TeV")
+    parser.add_argument(
+        "--xlim",
+        nargs=2,
+        type=float,
+        default=[0, 120],
+        help="x-axis range in GeV",
+    )
+
 
     args = parser.parse_args()
 
-    make_plot(args.infile, args.outdir, args.mode, args.lumi, args.com)
+    make_plot(args.infile, args.outdir, args.mode, args.lumi, args.com, args.xlim)
 
 
 if __name__ == "__main__":
