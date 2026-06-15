@@ -6,9 +6,10 @@ from wums import logging
 
 analysis_label = common.analysis_label(os.path.basename(__file__))
 parser, initargs = parsing.common_parser(analysis_label)
-parser.add_argument("--flavor", default="mu", choices=["mu"], help="Lepton flavor")
+parser.add_argument("--flavor", default="mu", choices=["mu"], help="Lepton flavor") # is this needed? 
 
 args = parser.parse_args()
+
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
 
 import hist
@@ -32,13 +33,15 @@ datasets = getDatasets(
     era=args.era,
 )
 
-# import lz4.frame
-# import pickle
+# ===== Theory Corrections ======
+
+import lz4.frame
+import pickle
 
 # theory_corrs = args.theoryCorr
 # theory_corr_base = f"{common.data_dir}/TheoryCorrections/5020GeV"
 
-# change: (check the pickle? names)
+# change (pull WMUNU5020GeV when availible)
 
 # def load_corr_hist_5020(filename, proc, histname):
 #     """5020 GeV pickles use ZMUMU5020GEV keys and legacy hist names."""
@@ -68,18 +71,7 @@ axis_abs_mu_eta = hist.axis.Variable(
 axis_mu_charge = hist.axis.Integer(-1, 2, name="mu_charge", underflow=False, overflow=False)
 axis_phi = hist.axis.Regular(50, -math.pi, math.pi, circular=True, name="phi")
 
-axis_met_pt = hist.axis.Regular(60, 0, 150, name="met_pt")
-
 axis_w_mt = hist.axis.Regular(80, 0, 160, name="w_mt")
-# Reconstructed W transverse momentum from muon + MET.
-axis_w_pt = hist.axis.Variable(
-    [0, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5,
-        5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5,
-        9, 9.5, 10, 10.5, 11, 11.5, 12,
-        13, 14, 15, 16, 17, 18, 19, 20,
-        22, 24, 26, 28, 30, 33, 37, 44, 100
-    ],name="w_pt",underflow=False,overflow=True,
-)
 
 axis_prefire_tensor = hist.axis.Integer(0, 2, name="prefire_variation", underflow=False, overflow=False)
 
@@ -100,11 +92,10 @@ def build_graph(df, dataset):
     # ----- Event Selection: W -> mu nu (require 1 good mu and missing pT) ------
 
     df = df.Filter("HLT_HIMu17","Single-muon trigger")
-
     df = df.Define(
         "goodMu",
-        "Muon_pt > 25 && abs(Muon_eta) < 2.4 && Muon_mediumId && Muon_isGlobal"
-    )
+        "Muon_pt > 25 && abs(Muon_eta) < 2.4 && Muon_mediumId && Muon_isGlobal" 
+    )  
 
     df = df.Define("goodMu_idx", "ROOT::VecOps::Nonzero(goodMu)")
     df = df.Filter("goodMu_idx.size() == 1", "Exactly one good muon")
@@ -115,7 +106,19 @@ def build_graph(df, dataset):
     df = df.Define("i_mu", "int(goodMu_idx[0])") 
     # bookeeping: count reconstructed leptons
     df = df.Define("nLepton", "nElectron + nMuon") 
-    
+
+    # ------ MET cut ------
+    df = df.Filter("met_pt > 25", "MET requirement") # from CMS AN-25-085 Section 5
+
+    # MET kinematics left out for now
+    # df = df.Alias("MET_corr_rec_pt", "MET_pt")
+    # df = df.Alias("MET_corr_rec_phi", "MET_phi")
+
+    # df = (
+    #     df.Define("met_pt", "MET_corr_rec_pt")
+    #       .Define("met_phi", "MET_corr_rec_phi")
+    # )
+
     # ------- Muon kinematics -------
     MU_MASS = 0.105658
 
@@ -125,45 +128,34 @@ def build_graph(df, dataset):
           .Define("mu_eta", "Muon_eta[i_mu]")
           .Define("mu_phi", "Muon_phi[i_mu]")
           .Define("abs_mu_eta", "std::fabs(mu_eta)")
-          # splitting charge (this might matter because mostly d ubar --> W- and u dbar --> W+)
+          # splitting charge (mostly d ubar --> W- and u dbar --> W+)
           .Define("mu_charge", "Muon_charge[i_mu]")
     )
 
-    # ------ MET kinematics ------
-    df = df.Alias("MET_corr_rec_pt", "MET_pt")
-    df = df.Alias("MET_corr_rec_phi", "MET_phi")
-
-    df = (
-        df.Define("met_pt", "MET_corr_rec_pt")
-          .Define("met_phi", "MET_corr_rec_phi")
-    )
-
-    df = df.Filter("met_pt > 25", "MET requirement")
-
-    # backgrounds =: Z/Y* , W --> taunu
-
-    # ------ W transverse obs -------
-    df = (
-        df.Define(
-            "dphi_mu_met",
-            "std::atan2(std::sin(mu_phi - met_phi), std::cos(mu_phi - met_phi))",
-        )
-          .Define(
-              "w_mt",
-              "std::sqrt(2.0 * mu_pt * met_pt * (1.0 - std::cos(dphi_mu_met)))",
-          )
-          .Define("mu_px", "mu_pt * std::cos(mu_phi)")
-          .Define("mu_py", "mu_pt * std::sin(mu_phi)")
-          .Define("met_px", "met_pt * std::cos(met_phi)")
-          .Define("met_py", "met_pt * std::sin(met_phi)")
-          .Define("w_px", "mu_px + met_px")
-          .Define("w_py", "mu_py + met_py")
-          .Define("w_pt", "std::sqrt(w_px*w_px + w_py*w_py)")
-          .Define("w_phi", "std::atan2(w_py, w_px)")
-    )
+    # # ------ W transverse obs, not needed for now -------
+    # df = (
+    #     df.Define(
+    #         "dphi_mu_met",
+    #         "std::atan2(std::sin(mu_phi - met_phi), std::cos(mu_phi - met_phi))",
+    #     )
+    #       .Define(
+    #           "w_mt",
+    #           "std::sqrt(2.0 * mu_pt * met_pt * (1.0 - std::cos(dphi_mu_met)))",
+    #       )
+    #       .Define("mu_px", "mu_pt * std::cos(mu_phi)")
+    #       .Define("mu_py", "mu_pt * std::sin(mu_phi)")
+    #       .Define("met_px", "met_pt * std::cos(met_phi)")
+    #       .Define("met_py", "met_pt * std::sin(met_phi)")
+    #       .Define("w_px", "mu_px + met_px")
+    #       .Define("w_py", "mu_py + met_py")
+    #       .Define("w_pt", "std::sqrt(w_px*w_px + w_py*w_py)")
+    #       .Define("w_phi", "std::atan2(w_py, w_px)")
+    # )
 
     # half the boson weight
     df = df.Filter("w_mt > 40", "W transverse mass requirement")
+
+    # backgrounds =: Z/Y* , W --> taunu
 
     # prefiring
     if dataset.is_data:
@@ -207,9 +199,11 @@ def build_graph(df, dataset):
     hist_abs_mu_eta = df.HistoBoost("abs_mu_eta", [axis_abs_mu_eta], ["abs_mu_eta", "nominal_weight"])
     hist_mu_phi = df.HistoBoost("mu_phi", [axis_phi], ["mu_phi", "nominal_weight"])
     hist_mu_charge = df.HistoBoost("mu_charge", [axis_mu_charge], ["mu_charge", "nominal_weight"])
+
     #MET
     hist_met_pt = df.HistoBoost("met_pt", [axis_met_pt], ["met_pt", "nominal_weight"])
     hist_met_phi = df.HistoBoost("met_phi", [axis_phi], ["met_phi", "nominal_weight"])
+
     # W transverse observables
     hist_w_mt = df.HistoBoost("w_mt", [axis_w_mt], ["w_mt", "nominal_weight"])
     hist_w_pt = df.HistoBoost("w_pt", [axis_w_pt], ["w_pt", "nominal_weight"])
@@ -241,17 +235,6 @@ def build_graph(df, dataset):
         hist_mu_phi,
         hist_mu_charge,
         hist_met_pt,
-        hist_met_phi,
-        hist_w_mt,
-        hist_w_pt,
-        hist_w_phi,
-        hist_w_pt_plus,
-        hist_w_pt_minus,
-        hist_w_mt_plus,
-        hist_w_mt_minus,
-        hist_wpt_absEta,
-        hist_wpt_absEta_plus,
-        hist_wpt_absEta_minus,
         hist_mupt_absEta_plus,
         hist_mupt_absEta_minus
     ]
@@ -286,10 +269,10 @@ def build_graph(df, dataset):
             tensor_axes=[axis_prefire_tensor],
         )
 
-        hist_wmt_prefire = df.HistoBoost(
-            "wmt_prefiring",
-            [axis_w_mt],
-            ["w_mt", "prefire_vector_weight"],
+        hist_mupt_absEta_prefire = df.HistoBoost(
+            "mupt_absEta_prefiring",
+            [axis_mu_pt, axis abs_mu_eta],
+            ["mu_mt", "abs_my_eta" "prefire_vector_weight"],
             tensor_axes=[axis_prefire_tensor],
         )
 
