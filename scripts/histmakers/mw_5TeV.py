@@ -6,9 +6,13 @@ from wums import logging
 
 analysis_label = common.analysis_label(os.path.basename(__file__))
 parser, initargs = parsing.common_parser(analysis_label)
-parser.add_argument("--flavor", default="mu", choices=["mu"], help="Lepton flavor") # is this needed? 
+parser.add_argument("--flavor", default="mu", choices=["mu"], help="Lepton flavor")
 
 args = parser.parse_args()
+print("analysis_label =", analysis_label)
+print("era =", args.era)
+print("dataPath =", args.dataPath)
+print("flavor =", getattr(args, "flavor", None))
 
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
 
@@ -19,10 +23,15 @@ from wremnants.production import (
     generator_level_definitions,
     systematics,
     theory_corrections,
+
 )
 
 from wremnants.production.datasets.dataset_tools import getDatasets
-from wremnants.production.histmaker_tools import write_analysis_output
+from wremnants.production.histmaker_tools import (
+    write_analysis_output, 
+    aggregate_groups, 
+    scale_to_data,
+)
 from wremnants.production import generator_level_definitions
 
 datasets = getDatasets(
@@ -35,8 +44,8 @@ datasets = getDatasets(
 
 # ===== Theory Corrections ======
 
-import lz4.frame
-import pickle
+# import lz4.frame
+# import pickle
 
 # theory_corrs = args.theoryCorr
 # theory_corr_base = f"{common.data_dir}/TheoryCorrections/5020GeV"
@@ -73,6 +82,11 @@ axis_phi = hist.axis.Regular(50, -math.pi, math.pi, circular=True, name="phi")
 
 axis_w_mt = hist.axis.Regular(80, 0, 160, name="w_mt")
 
+axis_met_pt = hist.axis.Regular(60,0,150, name="met_pt")
+axis_met_phi = hist.axis.Regular(50, -math.pi, math.pi, circular=True, name="met_phi")
+
+axis_w_pt = hist.axis.Regular(80, 0, 160, name="w_pt")
+
 axis_prefire_tensor = hist.axis.Integer(0, 2, name="prefire_variation", underflow=False, overflow=False)
 
 def build_graph(df, dataset):
@@ -107,17 +121,16 @@ def build_graph(df, dataset):
     # bookeeping: count reconstructed leptons
     df = df.Define("nLepton", "nElectron + nMuon") 
 
-    # ------ MET cut ------
-    df = df.Filter("met_pt > 25", "MET requirement") # from CMS AN-25-085 Section 5
-
-    # MET kinematics left out for now
-    # df = df.Alias("MET_corr_rec_pt", "MET_pt")
-    # df = df.Alias("MET_corr_rec_phi", "MET_phi")
-
-    # df = (
-    #     df.Define("met_pt", "MET_corr_rec_pt")
-    #       .Define("met_phi", "MET_corr_rec_phi")
-    # )
+    # ------ MET kinematics ------
+    # For now using stored NanoAOD MET directly. Later can replace with recoil-corrected MET from
+    # recoilHelper.recoil_W.
+    df = df.Alias("MET_corr_rec_pt", "MET_pt")
+    df = df.Alias("MET_corr_rec_phi", "MET_phi")
+    df = (
+        df.Define("met_pt", "MET_corr_rec_pt")
+        .Define("met_phi", "MET_corr_rec_phi")
+    )
+    # df = df.Filter("met_pt > 25", "MET requirement") # from CMS AN-25-085
 
     # ------- Muon kinematics -------
     MU_MASS = 0.105658
@@ -132,30 +145,30 @@ def build_graph(df, dataset):
           .Define("mu_charge", "Muon_charge[i_mu]")
     )
 
-    # # ------ W transverse obs, not needed for now -------
-    # df = (
-    #     df.Define(
-    #         "dphi_mu_met",
-    #         "std::atan2(std::sin(mu_phi - met_phi), std::cos(mu_phi - met_phi))",
-    #     )
-    #       .Define(
-    #           "w_mt",
-    #           "std::sqrt(2.0 * mu_pt * met_pt * (1.0 - std::cos(dphi_mu_met)))",
-    #       )
-    #       .Define("mu_px", "mu_pt * std::cos(mu_phi)")
-    #       .Define("mu_py", "mu_pt * std::sin(mu_phi)")
-    #       .Define("met_px", "met_pt * std::cos(met_phi)")
-    #       .Define("met_py", "met_pt * std::sin(met_phi)")
-    #       .Define("w_px", "mu_px + met_px")
-    #       .Define("w_py", "mu_py + met_py")
-    #       .Define("w_pt", "std::sqrt(w_px*w_px + w_py*w_py)")
-    #       .Define("w_phi", "std::atan2(w_py, w_px)")
-    # )
+    # # ----- Not used in current single-muon obv // W transverse obs, not needed for now ------
+    df = (
+        df.Define(
+            "dphi_mu_met",
+            "std::atan2(std::sin(mu_phi - met_phi), std::cos(mu_phi - met_phi))",
+        )
+          .Define(
+              "w_mt",
+              "std::sqrt(2.0 * mu_pt * met_pt * (1.0 - std::cos(dphi_mu_met)))",
+          )
+          .Define("mu_px", "mu_pt * std::cos(mu_phi)")
+          .Define("mu_py", "mu_pt * std::sin(mu_phi)")
+          .Define("met_px", "met_pt * std::cos(met_phi)")
+          .Define("met_py", "met_pt * std::sin(met_phi)")
+          .Define("w_px", "mu_px + met_px")
+          .Define("w_py", "mu_py + met_py")
+          .Define("w_pt", "std::sqrt(w_px*w_px + w_py*w_py)")
+          .Define("w_phi", "std::atan2(w_py, w_px)")
+    )
 
-    # half the boson weight
+    #  half the boson weight
     df = df.Filter("w_mt > 40", "W transverse mass requirement")
 
-    # backgrounds =: Z/Y* , W --> taunu
+    # add backgrounds =: Z/Y* , W --> taunu
 
     # prefiring
     if dataset.is_data:
@@ -213,17 +226,7 @@ def build_graph(df, dataset):
 
     df_plus = df.Filter("mu_charge > 0")
     df_minus = df.Filter("mu_charge < 0")
-
-    hist_w_pt_plus = df_plus.HistoBoost("w_pt_plus", [axis_w_pt], ["w_pt", "nominal_weight"])
-    hist_w_pt_minus = df_minus.HistoBoost("w_pt_minus", [axis_w_pt], ["w_pt", "nominal_weight"])
-    hist_w_mt_plus = df_plus.HistoBoost("w_mt_plus", [axis_w_mt], ["w_mt", "nominal_weight"])
-    hist_w_mt_minus = df_minus.HistoBoost("w_mt_minus", [axis_w_mt], ["w_mt", "nominal_weight"])
-
     # ---- un-rolled 2D histograms ----
-    hist_wpt_absEta = df.HistoBoost("wpt_absEta",[axis_w_pt, axis_abs_mu_eta],["w_pt", "abs_mu_eta", "nominal_weight"])
-    hist_wpt_absEta_plus = df_plus.HistoBoost("wpt_absEta_plus",[axis_w_pt, axis_abs_mu_eta],["w_pt", "abs_mu_eta", "nominal_weight"])
-    hist_wpt_absEta_minus = df_minus.HistoBoost("wpt_absEta_minus",[axis_w_pt, axis_abs_mu_eta],["w_pt", "abs_mu_eta", "nominal_weight"])
-
     hist_mupt_absEta_plus = df_plus.HistoBoost("mupt_absEta_plus",[axis_mu_pt, axis_abs_mu_eta],["mu_pt", "abs_mu_eta", "nominal_weight"])
     hist_mupt_absEta_minus = df_minus.HistoBoost("mupt_absEta_minus",[axis_mu_pt, axis_abs_mu_eta],["mu_pt", "abs_mu_eta", "nominal_weight"])
 
@@ -235,8 +238,12 @@ def build_graph(df, dataset):
         hist_mu_phi,
         hist_mu_charge,
         hist_met_pt,
+        hist_met_phi,
         hist_mupt_absEta_plus,
-        hist_mupt_absEta_minus
+        hist_mupt_absEta_minus,
+        hist_w_mt,
+        hist_w_pt,
+        hist_w_phi
     ]
 
     # === Prefiring variations ===
@@ -271,19 +278,31 @@ def build_graph(df, dataset):
 
         hist_mupt_absEta_prefire = df.HistoBoost(
             "mupt_absEta_prefiring",
-            [axis_mu_pt, axis abs_mu_eta],
-            ["mu_mt", "abs_my_eta" "prefire_vector_weight"],
+            [axis_mu_pt, axis_abs_mu_eta],
+            ["mu_pt", "abs_mu_eta", "prefire_vector_weight"],
+            tensor_axes=[axis_prefire_tensor],
+        )
+
+        hist_wpt_prefire = df.HistoBoost(
+            "w_pt_prefiring",
+            [axis_w_pt],
+            ["w_pt", "prefire_vector_weight"],
             tensor_axes=[axis_prefire_tensor],
         )
 
         results += [
             hist_mueta_prefire,
-            hist_wmt_prefire,
+            hist_mupt_absEta_prefire,
         ]
 
     return results, weightsum
 
-resultdict = narf.build_and_run(datasets, build_graph)
+logger.debug(f"Datasets are {[d.name for d in datasets]}")
+resultdict = narf.build_and_run(datasets[::-1], build_graph)
+
+if not args.noScaleToData:
+    scale_to_data(resultdict)
+    aggregate_groups(datasets, resultdict, args.aggregateGroups)
 
 fout = f"{os.path.basename(__file__).replace('py', 'hdf5')}"
 write_analysis_output(resultdict, fout, args)
