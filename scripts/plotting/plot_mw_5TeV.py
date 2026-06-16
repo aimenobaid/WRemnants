@@ -18,18 +18,45 @@ MC_GROUPS = {
     r"$W\rightarrow\mu\nu$": ["Wplusmunu_2017G", "Wminusmunu_2017G"],
 }
 
-def read_hist(infile, sample, histname):
-    return input_tools.read_and_scale(infile, sample, histname)
+MC_COLORS = [
+    "#7DB7E8",  # blue
+    "#F4A259",  # orange
+    "#7BC67B",  # green
+    "#C44E52",  # muted red
+]
+
+def load_results(infile):
+    obj = input_tools.read_infile(infile)
+    return obj[0] if isinstance(obj, tuple) else obj
+
+def read_hist(results, sample, histname):
+    return results[sample]["output"][histname].get()
 
 
 def samples_in_file(infile):
     return [k for k in input_tools.read_keys(infile) if k != "meta_info"]
 
-def sum_hists(infile, samples, histname):
+
+
+def get_data_hist(infile, histname):
+    data_samples = [s for s in samples_in_file(infile) if s.startswith("SingleMuon")]
+    if len(data_samples) != 1:
+        raise RuntimeError(f"Expected one SingleMuon sample, found {data_samples}")
+
+    h = read_hist(infile, data_samples[0], histname)
+    y = h.sum().value if hasattr(h.sum(), "value") else h.sum()
+    print(f"{data_samples[0]:25s} {histname:15s} yield = {y}")
+    return h
+
+def sum_hists(results, samples, histname):
     hsum = None
 
     for sample in samples:
-        h = read_hist(infile, sample, histname)
+        if sample not in results:
+            print(f"Skipping missing sample: {sample}")
+            continue
+
+        h = read_hist(results, sample, histname)
         y = h.sum().value if hasattr(h.sum(), "value") else h.sum()
         print(f"{sample:25s} {histname:15s} yield = {y}")
 
@@ -37,22 +64,13 @@ def sum_hists(infile, samples, histname):
 
     return hsum
 
-# def get_data_hist(infile, histname):
-#     data_samples = [s for s in samples_in_file(infile) if s.startswith("SingleMuon")]
-#     if len(data_samples) != 1:
-#         raise RuntimeError(f"Expected one SingleMuon sample, found {data_samples}")
 
-#     h = read_hist(infile, data_samples[0], histname)
-#     y = h.sum().value if hasattr(h.sum(), "value") else h.sum()
-#     print(f"{data_samples[0]:25s} {histname:15s} yield = {y}")
-#     return h
-
-def get_mc_stack(infile, histname):
+def get_mc_stack(results, histname):
     hists = []
     labels = []
 
     for label, samples in MC_GROUPS.items():
-        h = sum_hists(infile, samples, histname)
+        h = sum_hists(results, samples, histname)
         if h is None:
             continue
 
@@ -64,20 +82,38 @@ def get_mc_stack(infile, histname):
 
     return hists, labels
 
+
 def make_plot(infile, outdir, histname, xlabel, xlim, lumi, com, logy):
     os.makedirs(outdir, exist_ok=True)
 
-    mc_hists, mc_labels = get_mc_stack(infile, histname)
-    # data_hist = get_data_hist(infile, histname)
+    results = load_results(infile)
+    print("Available samples:", [k for k in results.keys() if k != "meta_info"])
+
+    mc_hists, mc_labels = get_mc_stack(results, histname)
 
     fig, ax = plt.subplots(figsize=(10.5, 8.0))
+
+    colors = MC_COLORS[:len(mc_hists)]
 
     hep.histplot(
         mc_hists,
         ax=ax,
         stack=True,
         histtype="fill",
+        color=colors[:len(mc_hists)],
+        alpha=0.75,
+        linewidth=0,
         label=mc_labels,
+        flow="none",
+    )
+
+    hep.histplot(
+        mc_hists,
+        ax=ax,
+        stack=True,
+        histtype="step",
+        color=colors[:len(mc_hists)],
+        linewidth=1.0,
         flow="none",
     )
 

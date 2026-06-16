@@ -168,8 +168,6 @@ def build_graph(df, dataset):
     #  half the boson weight
     df = df.Filter("w_mt > 40", "W transverse mass requirement")
 
-    # add backgrounds =: Z/Y* , W --> taunu
-
     # prefiring
     if dataset.is_data:
         df = df.Define("nominal_weight", "1.0")
@@ -226,6 +224,7 @@ def build_graph(df, dataset):
 
     df_plus = df.Filter("mu_charge > 0")
     df_minus = df.Filter("mu_charge < 0")
+    
     # ---- un-rolled 2D histograms ----
     hist_mupt_absEta_plus = df_plus.HistoBoost("mupt_absEta_plus",[axis_mu_pt, axis_abs_mu_eta],["mu_pt", "abs_mu_eta", "nominal_weight"])
     hist_mupt_absEta_minus = df_minus.HistoBoost("mupt_absEta_minus",[axis_mu_pt, axis_abs_mu_eta],["mu_pt", "abs_mu_eta", "nominal_weight"])
@@ -302,7 +301,7 @@ resultdict = narf.build_and_run(datasets[::-1], build_graph)
 
 if not args.noScaleToData:
     scale_to_data(resultdict)
-    aggregate_groups(datasets, resultdict, args.aggregateGroups)
+    # aggregate_groups(datasets, resultdict, args.aggregateGroups)
 
 fout = f"{os.path.basename(__file__).replace('py', 'hdf5')}"
 write_analysis_output(resultdict, fout, args)
