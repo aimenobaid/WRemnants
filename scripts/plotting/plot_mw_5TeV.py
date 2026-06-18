@@ -10,13 +10,13 @@ import mplhep as hep
 from wremnants.utilities.io_tools import input_tools
 from wums import plot_tools
 
-
 MC_GROUPS = {
-    r"$Z/\gamma^*\rightarrow\mu\mu$": ["Zmumu_2017G"],
-    r"$Z/\gamma^*\rightarrow\tau\tau$": ["Ztautau_2017G"],
-    r"$W\rightarrow\tau\nu$": ["Wminustaunu_2017G"],
-    r"$W\rightarrow\mu\nu$": ["Wplusmunu_2017G", "Wminusmunu_2017G"],
+    r"$Z/\gamma^*\rightarrow\mu\mu$": ["Zmumu_2017G", "Zmumu"],
+    r"$Z/\gamma^*\rightarrow\tau\tau$": ["Ztautau_2017G", "Ztautau"],
+    r"$W\rightarrow\tau\nu$": ["Wplustaunu_2017G","Wminustaunu_2017G", "Wtaunu"],
+    r"$W\rightarrow\mu\nu$": ["Wplusmunu_2017G", "Wminusmunu_2017G", "Wmunu"],
 }
+
 
 MC_COLORS = [
     "#7DB7E8",  # blue
@@ -32,18 +32,15 @@ def load_results(infile):
 def read_hist(results, sample, histname):
     return results[sample]["output"][histname].get()
 
+def samples_in_file(results):
+    return [k for k in results.keys() if k != "meta_info"]
 
-def samples_in_file(infile):
-    return [k for k in input_tools.read_keys(infile) if k != "meta_info"]
-
-
-
-def get_data_hist(infile, histname):
-    data_samples = [s for s in samples_in_file(infile) if s.startswith("SingleMuon")]
+def get_data_hist(results, histname):
+    data_samples = [s for s in samples_in_file(results) if s.startswith("SingleMuon")]
     if len(data_samples) != 1:
         raise RuntimeError(f"Expected one SingleMuon sample, found {data_samples}")
 
-    h = read_hist(infile, data_samples[0], histname)
+    h = read_hist(results, data_samples[0], histname)
     y = h.sum().value if hasattr(h.sum(), "value") else h.sum()
     print(f"{data_samples[0]:25s} {histname:15s} yield = {y}")
     return h
@@ -64,7 +61,6 @@ def sum_hists(results, samples, histname):
 
     return hsum
 
-
 def get_mc_stack(results, histname):
     hists = []
     labels = []
@@ -82,14 +78,14 @@ def get_mc_stack(results, histname):
 
     return hists, labels
 
-
 def make_plot(infile, outdir, histname, xlabel, xlim, lumi, com, logy):
     os.makedirs(outdir, exist_ok=True)
 
     results = load_results(infile)
-    print("Available samples:", [k for k in results.keys() if k != "meta_info"])
+    print("Available samples:", samples_in_file(results))
 
     mc_hists, mc_labels = get_mc_stack(results, histname)
+    data_hist = get_data_hist(results, histname)
 
     fig, ax = plt.subplots(figsize=(10.5, 8.0))
 
@@ -112,19 +108,19 @@ def make_plot(infile, outdir, histname, xlabel, xlim, lumi, com, logy):
         ax=ax,
         stack=True,
         histtype="step",
-        color=colors[:len(mc_hists)],
+        color="black",
         linewidth=1.0,
         flow="none",
     )
 
-    # hep.histplot(
-    #     data_hist,
-    #     ax=ax,
-    #     histtype="errorbar",
-    #     color="black",
-    #     label="Data",
-    #     flow="none",
-    # )
+    hep.histplot(
+        data_hist,
+        ax=ax,
+        histtype="errorbar",
+        color="black",
+        label="Data",
+        flow="none",
+    )
 
     if histname == "met_pt":
         for cut in [20, 25, 30, 35, 40]:
@@ -159,7 +155,7 @@ def make_plot(infile, outdir, histname, xlabel, xlim, lumi, com, logy):
 
     fig.tight_layout()
 
-    basename = f"{histname}_stacked_MC"
+    basename = f"{histname}_noMETcut"
     plot_tools.save_pdf_and_png(outdir, basename, fig=fig)
 
 def main():
