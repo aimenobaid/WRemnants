@@ -7,6 +7,7 @@ from wums import logging
 analysis_label = common.analysis_label(os.path.basename(__file__))
 parser, initargs = parsing.common_parser(analysis_label)
 parser.add_argument("--flavor", default="mu", choices=["mu"], help="Lepton flavor")
+parser = parsing.set_parser_default(parser, "pdfs", ["ct18z"])
 
 args = parser.parse_args()
 print("analysis_label =", analysis_label)
@@ -20,9 +21,10 @@ import narf
 
 from wremnants.production import (
     generator_level_definitions,
+    helicity_utils,
     systematics,
     theory_corrections,
-
+    unfolding_tools
 )
 
 from wremnants.production.datasets.dataset_tools import getDatasets
@@ -31,8 +33,6 @@ from wremnants.production.histmaker_tools import (
     aggregate_groups, 
     scale_to_data,
 )
-
-from wremnants.production import generator_level_definitions
 
 # ====================== 
 # Dataset loading 
@@ -74,21 +74,32 @@ datasets = getDatasets(
 
 # ------- MiNNLO / CT18Z alphaS weight information --------
 
-ct18z_alphaS_info = theory_corrections.make_theory_corr_weight_info(
+procs_v = [d.name for d in datasets if d.name in samples.vprocs]
+theory_corrs = [*args.theoryCorr, *args.ewTheoryCorr]
+
+corr_helpers = theory_corrections.load_corr_helpers(procs_v, theory_corrs)
+helicity_smoothing_helpers = {}
+
+print("Theory correction processes:", procs_v)
+print("Theory corrections:", theory_corrs)
+
+# ---- PDF weight information -----
+ct18z_pdf_info = theory_corrections.make_theory_corr_weight_info(
     "ct18z",
-    alphas=True,
+    alphas=False,
     renorm=True,
 )
-ct18z_alphaS_weights = ct18z_alphaS_info["weights"]
-if len(ct18z_alphaS_weights) != 3:
-    raise RuntimeError(
-        "Expected exactly 3 CT18Z alphaS weights: central, alphaSUp, alphaSDown. "
-        f"Got {len(ct18z_alphaS_weights)} weights: {ct18z_alphaS_weights}"
-    )
+ct18z_pdf_weights = ct18z_pdf_info["weights"]
+ct18z_pdf_labels = theory_utils.pdfNamesAsymHessian(
+    len(ct18z_pdf_weights),
+    "pdfCT18Z",
+)
+print("Number of CT18Z PDF weights:", len(ct18z_pdf_weights))
+print("First few CT18Z PDF labels:", ct18z_pdf_labels[:6])
 
-# ================
+# ====================
 #  Histogram axes 
-# ================
+# ====================
 axis_nLepton = hist.axis.Integer(0, 5, name="nLepton", underflow=False)
 axis_phi = hist.axis.Regular(50, -math.pi, math.pi, circular=True, name="phi")
 eta_bins = [-2.4, -2.1, -1.8, -1.5, -1.2, -0.9, -0.6, -0.3, 0.0,
@@ -106,48 +117,21 @@ axis_met_phi = hist.axis.Regular(50, -math.pi, math.pi, circular=True, name="met
 
 axis_w_mt = hist.axis.Regular(80, 0, 160, name="w_mt")
 axis_w_pt = hist.axis.Regular(80, 0, 160, name="w_pt")
-axis_w_y = hist.axis.Variable(
-    [-3.0, -2.4, -1.8, -1.2, -0.6, 
-     0.0, 0.6, 1.2, 1.8, 2.4, 3.0], 
+axis_w_y = hist.axis.Regular(48, -2.4, 2.4, 
     name="w_y", underflow=False, overflow=True)
 
 axis_prefire_tensor = hist.axis.Integer(0, 2, name="prefire_variation", underflow=False, overflow=False)
-axis_alphaS = hist.axis.StrCategory(["central", "alphaSUp", "alphaSDown"],name="alphaS")
+axis_alphaS = hist.axis.StrCategory(["central", "alphaSDown", "alphaSUp"],name="alphaS")
+axis_pdf = hist.axis.StrCategory(ct18z_pdf_labels, name="pdf")
 
-# ============================================================
-# Helper for alphaS tensor definition
-# ============================================================
+# --- diagnostic ---
+axis_nu_disc_case = hist.axis.Regular(2, 0, 2, name="nu_disc_case", underflow=False, overflow=False)
+# axis_nu_disc_case = hist.axis.Integer(0, 2, name="nu_disc_case", underflow=False, overflow=False)
+axis_nu_disc_norm = hist.axis.Regular(100, -2.0, 1.0, name="nu_disc_norm")
 
-def define_ct18z_alphaS_tensor(df, dataset_name):
-    df = df.DefinePerSample("theory_weight_truncate", "10.0")
-    df = theory_corrections.define_central_pdf_weight(df, dataset_name, "ct18z")
-    df = df.Define(
-        "ct18z_alphaS_vector",
-        """
-        auto res = std::vector<double>{
-        """ + ", ".join(
-            [f"""
-            central_pdf_weight == 0.0
-            ? 0.0
-            : nominal_weight / central_pdf_weight * ({weight_expr})
-            """
-            for weight_expr in ct18z_alphaS_weights]
-        )
-        + """
-        };
-        return res;
-        """,
-    )
-
-    df = df.Define(
-        "ct18z_alphaS_tensor",
-        "wrem::vec_to_tensor<3>(ct18z_alphaS_vector)",
-    )
-    return df
-
-# ====================
+# =====================
 # Main graph building 
-# ====================
+# =====================
 
 def build_graph(df, dataset):
     logger.info(f"build graph for dataset: {dataset.name}")
@@ -215,27 +199,56 @@ def build_graph(df, dataset):
           .Define("w_py", "mu_py + met_py")
           .Define("w_pt", "std::sqrt(w_px*w_px + w_py*w_py)")
           .Define("w_phi", "std::atan2(w_py, w_px)")
-          .Define("nu_pz",
-                    """
-                    const double mW = 80.379;
-                    const double ptl2 = mu_pt * mu_pt;
-                    const double A = mW*mW + 2.0*(mu_px*met_px + mu_py*met_py);
-                    const double disc = A*A - 4.0*ptl2*met_pt*met_pt;
+        #   .Define("nu_pz",
+        #             """
+        #             const double mW = 80.379;
+        #             const double ptl2 = mu_pt * mu_pt;
+        #             const double A = mW*mW + 2.0*(mu_px*met_px + mu_py*met_py);
+        #             const double disc = A*A - 4.0*ptl2*met_pt*met_pt;
 
-                    double sqrt_disc = 0.0;
-                    if (disc > 0.0) {
-                        sqrt_disc = std::sqrt(disc);
-                    }
-                    const double sol1 = (A*mu_pz + mu_E*sqrt_disc)/(2.0*ptl2);
-                    const double sol2 = (A*mu_pz - mu_E*sqrt_disc)/(2.0*ptl2);
-                    if (std::fabs(sol1) < std::fabs(sol2)) {
-                        return sol1;
-                    } else {
-                    return sol2;
-                    }
-                    """)
+        #             double sqrt_disc = 0.0;
+        #             if (disc > 0.0) {
+        #                 sqrt_disc = std::sqrt(disc);
+        #             }
+        #             const double sol1 = (A*mu_pz + mu_E*sqrt_disc)/(2.0*ptl2);
+        #             const double sol2 = (A*mu_pz - mu_E*sqrt_disc)/(2.0*ptl2);
+        #             if (std::fabs(sol1) < std::fabs(sol2)) {
+        #                 return sol1;
+        #             } else {
+        #             return sol2;
+        #             }
+        #             """)
+        #   .Define("nu_E", "std::sqrt(met_pt*met_pt + nu_pz*nu_pz)")
+        #   .Define("w_E","nu_E + mu_E")
+        #   .Define("w_pz", "mu_pz + nu_pz")
+        #   .Define("w_y",
+        #     """
+        #     const double num = w_E + w_pz;
+        #     const double den = w_E - w_pz;
+        #     if (num <= 0.0 || den <= 0.0) return -999.0;
+        #     return 0.5 * std::log(num/den);
+        #     """,
+          .Define("ptl2", "mu_pt * mu_pt")
+          .Define("nu_A", "80.379*80.379 + 2.0*(mu_px*met_px + mu_py*met_py)")
+          .Define("nu_disc", "nu_A*nu_A - 4.0*ptl2*met_pt*met_pt")
+          .Define("nu_disc_norm", "nu_A != 0.0 ? nu_disc/(nu_A*nu_A) : 0.0")
+          .Define("nu_disc_case", "nu_disc < 0.0 ? 0.5 : 1.5")
+          .Define("nu_sqrt_disc", "nu_disc > 0.0 ? std::sqrt(nu_disc) : 0.0")
+
+          .Define("nu_pz_sol_plus",
+              "(nu_A*mu_pz + mu_E*nu_sqrt_disc)/(2.0*ptl2)")
+          .Define("nu_pz_sol_minus",
+              "(nu_A*mu_pz - mu_E*nu_sqrt_disc)/(2.0*ptl2)")
+
+          .Define("nu_pz_smallAbs",
+              "std::fabs(nu_pz_sol_plus) < std::fabs(nu_pz_sol_minus) ? nu_pz_sol_plus : nu_pz_sol_minus")
+          .Define("nu_pz_largeAbs",
+              "std::fabs(nu_pz_sol_plus) > std::fabs(nu_pz_sol_minus) ? nu_pz_sol_plus : nu_pz_sol_minus")
+
+          # Current prescription: smaller |pz_nu|
+          .Define("nu_pz", "nu_pz_smallAbs")
           .Define("nu_E", "std::sqrt(met_pt*met_pt + nu_pz*nu_pz)")
-          .Define("w_E","nu_E + mu_E")
+          .Define("w_E", "nu_E + mu_E")
           .Define("w_pz", "mu_pz + nu_pz")
           .Define("w_y",
             """
@@ -243,48 +256,67 @@ def build_graph(df, dataset):
             const double den = w_E - w_pz;
             if (num <= 0.0 || den <= 0.0) return -999.0;
             return 0.5 * std::log(num/den);
-            """,
-            )
- 
+            """)
+
+          # Alternative 1: larger |pz_nu| solution
+          .Define("nu_E_largeAbs",
+              "std::sqrt(met_pt*met_pt + nu_pz_largeAbs*nu_pz_largeAbs)")
+          .Define("w_E_largeAbs", "nu_E_largeAbs + mu_E")
+          .Define("w_pz_largeAbs", "mu_pz + nu_pz_largeAbs")
+          .Define("w_y_largeAbs",
+            """
+            const double num = w_E_largeAbs + w_pz_largeAbs;
+            const double den = w_E_largeAbs - w_pz_largeAbs;
+            if (num <= 0.0 || den <= 0.0) return -999.0;
+            return 0.5 * std::log(num/den);
+            """)
+
+          # Alternative 2: projected-MET treatment for negative discriminant
+          .Define("met_scale_to_mW",
+            """
+            const double mW = 80.379;
+            const double denom = 2.0 * mu_pt * met_pt * (1.0 - std::cos(dphi_mu_met));
+            if (denom <= 0.0) return 1.0;
+            return (mW*mW)/denom;
+            """)
+          .Define("met_pt_projected",
+              "nu_disc < 0.0 ? met_scale_to_mW * met_pt : met_pt")
+          .Define("met_px_projected", "met_pt_projected * std::cos(met_phi)")
+          .Define("met_py_projected", "met_pt_projected * std::sin(met_phi)")
+          .Define("nu_A_projected",
+                  "80.379*80.379 + 2.0*(mu_px*met_px_projected + mu_py*met_py_projected)")
+          .Define("nu_pz_projected",
+              "nu_disc < 0.0 ? (nu_A_projected * mu_pz)/(2.0*ptl2) : nu_pz_smallAbs")
+          .Define("nu_E_projected",
+              "std::sqrt(met_pt_projected*met_pt_projected + nu_pz_projected*nu_pz_projected)")
+          .Define("w_E_projected", "nu_E_projected + mu_E")
+          .Define("w_pz_projected", "mu_pz + nu_pz_projected")
+          .Define("w_y_projected",
+            """
+            const double num = w_E_projected + w_pz_projected;
+            const double den = w_E_projected - w_pz_projected;
+            if (num <= 0.0 || den <= 0.0) return -999.0;
+            return 0.5 * std::log(num/den);
+            """)
     )
-    #  half the boson mass
+
     df = df.Filter("w_mt > 40", "W transverse mass requirement")
 
-    # ========= Nominal experimental weight and alphaS tensor weights =========
+    # --- nominal weight and alphaS tensor weights ---
     if dataset.is_data:
         df = df.Define("nominal_weight", "1.0")
+
     else:
         df = df.Define("exp_weight", "weight*L1PreFiringWeight_Nom")
-        df = generator_level_definitions.define_prefsr_vars(df)
-        df = df.Alias("nominal_weight_uncorr", "exp_weight")
-        df = df.Define("nominal_weight", "exp_weight")
+        df = theory_corrections.define_theory_weights_and_corrs(
+        df,dataset.name, corr_helpers, args, helicity_smoothing_helpers=helicity_smoothing_helpers,
+    )
 
-        # CT18Z alphaS tensor, adds the MiNNLO alphaS event-weight variations.
-        df = define_ct18z_alphaS_tensor(df, dataset.name)
+    # ==========
+    # Histograms 
+    # ===========
 
-        # df = df.DefinePerSample("central_pdf_weight", "1.0")
-        # df = df.DefinePerSample("theory_weight_truncate", "10.0")
-        # for theory_corr_name in theory_corrs:
-        #     if theory_corr_name not in corr_helpers[dataset.name]:
-        #         continue
-        #     df = theory_corrections.define_theory_corr_weight_column(
-        #         df, theory_corr_name
-        #     )
-        #     df = df.Define(
-        #         f"{theory_corr_name}Weight_tensor",
-        #         corr_helpers[dataset.name][theory_corr_name],
-        #         [
-        #             "massVgen",
-        #             "absYVgen",
-        #             "ptVgen",
-        #             "chargeVgen",
-        #             f"{theory_corr_name}_corr_weight",
-        #         ],
-        #    )
-        # theory_corr_name = theory_corrs[0]
-        # df = df.Define("nominal_weight", f"{theory_corr_name}Weight_tensor[0]")
-
-    # ========== Histograms ===========
+    # ===== nominal hists ====
 
     # ------ Event and muon kinematics -----
     hist_nLepton = df.HistoBoost("nLepton", [axis_nLepton], ["nLepton", "nominal_weight"])
@@ -313,10 +345,15 @@ def build_graph(df, dataset):
     hist_mupt_eta_plus = df_plus.HistoBoost("mupt_eta_plus",[axis_mu_pt, axis_mu_eta],["mu_pt", "mu_eta", "nominal_weight"])
     hist_mupt_eta_minus = df_minus.HistoBoost("mupt_eta_minus",[axis_mu_pt, axis_mu_eta],["mu_pt", "mu_eta", "nominal_weight"])
     # Unrolled 2D W histograms.
-    # w_pt comes from transverse muon + MET components.
-    # w_y uses the W-mass-constraint estimate of nu_pz.
     hist_wpt_y_plus = df_plus.HistoBoost("wpt_y_plus",[axis_w_pt, axis_w_y],["w_pt", "w_y", "nominal_weight"])
     hist_wpt_y_minus = df_minus.HistoBoost("wpt_y_minus",[axis_w_pt, axis_w_y],["w_pt", "w_y", "nominal_weight"])
+
+    # ------ diagnostic hists ----
+    hist_nu_disc_case = df.HistoBoost("nu_disc_case",[axis_nu_disc_case],["nu_disc_case","nominal_weight"])
+    hist_nu_disc_norm = df.HistoBoost("nu_disc_norm",[axis_nu_disc_norm],["nu_disc_norm","nominal_weight"])
+    hist_w_y_smallAbs = df.HistoBoost("w_y_smallAbs",[axis_w_y],["w_y","nominal_weight"])
+    hist_w_y_largeAbs = df.HistoBoost("w_y_largeAbs",[axis_w_y],["w_y_largeAbs","nominal_weight"])
+    hist_w_y_projected = df.HistoBoost("w_y_projected",[axis_w_y],["w_y_projected","nominal_weight"])
 
     results += [
         hist_nLepton,
@@ -336,21 +373,30 @@ def build_graph(df, dataset):
         # hist_mu_relIso,
         # hist_mu_dxy,
         # hist_mu_relIso_dxy,
+        hist_nu_disc_case,
+        hist_nu_disc_norm,
+        hist_w_y_smallAbs,
+        hist_w_y_largeAbs,
+        hist_w_y_projected,
     ]
 
     # ===== alphaS variation histograms (MC ONLY) ======
     if not dataset.is_data:
-        hist_w_pt_alphaS = df.HistoBoost("w_pt_alphaS",[axis_w_pt],["w_pt", "ct18z_alphaS_tensor"],tensor_axes=[axis_alphaS])
-        hist_w_mt_alphaS = df.HistoBoost("w_mt_alphaS",[axis_w_mt],["w_mt", "ct18z_alphaS_tensor"],tensor_axes=[axis_alphaS])
-        hist_w_y_alphaS = df.HistoBoost("w_y_alphaS",[axis_w_y],["w_y","ct18z_alphaS_tensor"],tensor_axes=[axis_alphaS])
+        hist_w_pt_alphaS = df.HistoBoost("w_pt_alphaS",[axis_w_pt],["w_pt", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
+        hist_w_mt_alphaS = df.HistoBoost("w_mt_alphaS",[axis_w_mt],["w_mt", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
+        hist_w_y_alphaS = df.HistoBoost("w_y_alphaS",[axis_w_y],["w_y","pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
+        hist_w_y_plus_alphaS = df_plus.HistoBoost("w_y_plus_alphaS",[axis_w_y],
+            ["w_y", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
+        hist_w_y_minus_alphaS = df_minus.HistoBoost("w_y_minus_alphaS",[axis_w_y],
+            ["w_y", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
         hist_mupt_eta_plus_alphaS = df_plus.HistoBoost("mupt_eta_plus_alphaS",[axis_mu_pt, axis_mu_eta],
-            ["mu_pt", "mu_eta", "ct18z_alphaS_tensor"],tensor_axes=[axis_alphaS])
+            ["mu_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
         hist_mupt_eta_minus_alphaS = df_minus.HistoBoost("mupt_eta_minus_alphaS",[axis_mu_pt, axis_mu_eta],
-            ["mu_pt", "mu_eta", "ct18z_alphaS_tensor"],tensor_axes=[axis_alphaS])
+            ["mu_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
         hist_wpt_y_plus_alphaS = df_plus.HistoBoost("wpt_y_plus_alphaS",[axis_w_pt, axis_w_y],
-            ["w_pt", "w_y", "ct18z_alphaS_tensor"],tensor_axes=[axis_alphaS])
+            ["w_pt", "w_y", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
         hist_wpt_y_minus_alphaS = df_minus.HistoBoost("wpt_y_minus_alphaS",[axis_w_pt, axis_w_y],
-            ["w_pt", "w_y", "ct18z_alphaS_tensor"],tensor_axes=[axis_alphaS])
+            ["w_pt", "w_y", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
 
         results += [
             hist_w_pt_alphaS,
@@ -360,6 +406,35 @@ def build_graph(df, dataset):
             hist_mupt_eta_minus_alphaS,
             hist_wpt_y_plus_alphaS,
             hist_wpt_y_minus_alphaS,
+            hist_w_y_plus_alphaS,
+            hist_w_y_minus_alphaS,
+        ]
+
+    # ===== pdf variation histograms (MC ONLY) ========
+    if not dataset.is_data: 
+        hist_w_pt_pdf = df.HistoBoost("w_pt_pdf",[axis_w_pt],["w_pt", "pdfCT18ZWeights_tensor"],
+            tensor_axes=[axis_pdf])
+        hist_w_mt_pdf = df.HistoBoost("w_mt_pdf",[axis_w_mt],["w_mt", "pdfCT18ZWeights_tensor"],
+            tensor_axes=[axis_pdf])
+        hist_w_y_pdf = df.HistoBoost("w_y_pdf",[axis_w_y],["w_y", "pdfCT18ZWeights_tensor"],
+            tensor_axes=[axis_pdf])
+        hist_mupt_eta_plus_pdf = df_plus.HistoBoost("mupt_eta_plus_pdf",[axis_mu_pt, axis_mu_eta],["mu_pt", "mu_eta", "pdfCT18ZWeights_tensor"],
+            tensor_axes=[axis_pdf])
+        hist_mupt_eta_minus_pdf = df_minus.HistoBoost("mupt_eta_minus_pdf",[axis_mu_pt, axis_mu_eta],["mu_pt", "mu_eta", "pdfCT18ZWeights_tensor"],
+            tensor_axes=[axis_pdf])
+        hist_wpt_y_plus_pdf = df_plus.HistoBoost("wpt_y_plus_pdf",[axis_w_pt, axis_w_y],["w_pt", "w_y", "pdfCT18ZWeights_tensor"],
+            tensor_axes=[axis_pdf])
+        hist_wpt_y_minus_pdf = df_minus.HistoBoost("wpt_y_minus_pdf",[axis_w_pt, axis_w_y],["w_pt", "w_y", "pdfCT18ZWeights_tensor"],
+            tensor_axes=[axis_pdf])
+        
+        results += [
+            hist_w_pt_pdf,
+            hist_w_mt_pdf,
+            hist_w_y_pdf,
+            hist_mupt_eta_plus_pdf,
+            hist_mupt_eta_minus_pdf,
+            hist_wpt_y_plus_pdf,
+            hist_wpt_y_minus_pdf,
         ]
 
     # ============= Prefiring variations ==================
@@ -390,7 +465,7 @@ def build_graph(df, dataset):
         results += [
             hist_mueta_prefire,
             hist_mupt_eta_prefire,
-            # hist_wpt_prefire,
+            hist_wpt_prefire,
         ]
 
     return results, weightsum
