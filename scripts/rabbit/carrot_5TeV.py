@@ -1,0 +1,407 @@
+import argparse
+import h5py
+import os
+import sys
+
+def print_flush(*args, **kwargs):
+    print(*args, **kwargs)
+    sys.stdout.flush()
+
+wremnants_base = os.environ.get("WREM_BASE", None)
+if wremnants_base is None:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    wremnants_base = os.path.abspath(os.path.join(script_dir, "../.."))
+    if os.path.exists(os.path.join(wremnants_base, "wums")):
+        sys.path.insert(0, wremnants_base)
+
+from wremnants.utilities.io_tools import base_io
+from rabbit import tensorwriter
+
+# -----------------------------------
+# Arguments
+# -----------------------------------
+parser = argparse.ArgumentParser()
+parser.add_argument("infile", help="Input WRemnants HDF5 file")
+parser.add_argument("-o", "--output", default="./", help="Output directory")
+parser.add_argument("--outname", default="my_tensor", help="Output tensor file name")
+parser.add_argument("--histName", default="ptll", help="Nominal histogram name")
+parser.add_argument("--analysis",choices=["z", "w"],
+    default="z",help="Analysis mode. Only controls default process filters.")
+parser.add_argument("--procFilters",nargs="*",default=None,help="Processes to include. Defaults depend on --analysis.",)
+parser.add_argument("--signalFilters",nargs="*",default=None,
+    help="Processes receiving PDF/alphaS systematics. Defaults depend on --analysis.",)
+parser.add_argument("--asimovMode",choices=["first", "sum"],default="first",
+    help="first = old behavior, use first MC process as Asimov data; sum = sum selected MC processes.")
+parser.add_argument("--sparse",default=False,action="store_true",help="Make sparse tensor")
+parser.add_argument("--systematicType",choices=["log_normal", "normal"],default="log_normal",
+    help="Probability density for systematic variations")
+parser.add_argument("--alphaSUpName",default="pdfCT18ZNNLO_as_0120", help="Name of the alphaS-up variation on the vars axis")
+parser.add_argument("--alphaSDownName",default="pdfCT18ZNNLO_as_0116",help="Name of the alphaS-down variation on the vars axis")
+args = parser.parse_args()
+
+# ---------------------------
+# Defaults
+# ---------------------------
+if args.procFilters is None:
+    if args.analysis == "z":
+        args.procFilters = ["Zmumu"]
+    else:
+        args.procFilters = ["Wplusmunu", "Wminusmunu", "Wmunu"]
+
+if args.signalFilters is None:
+    if args.analysis == "z":
+        args.signalFilters = ["Zmumu", "Ztautau"]
+    else:
+        args.signalFilters = ["Wplusmunu", "Wminusmunu", "Wmunu"]
+
+# -------------------
+# helpers
+# -------------------
+def get_hist(results, proc, hist_name):
+    h_proxy = results[proc]["output"][hist_name]
+    return h_proxy.get() if hasattr(h_proxy, "get") else h_proxy
+
+def has_hist(results, proc, hist_name):
+    return (
+        proc in results
+        and "output" in results[proc]
+        and hist_name in results[proc]["output"]
+    )
+
+def add_hist(hsum, h):
+    return h.copy() if hsum is None else hsum + h
+
+def project_to_nominal_axes(h_var, h_nom):
+    return h_var.project(*h_nom.axes.name)
+
+def find_corr_hist_name(results, proc, hist_name, tag):
+    output = results[proc]["output"]
+    matches = [
+        name
+        for name in output
+        if name.startswith(f"{hist_name}_")
+        and tag in name
+        and name.endswith("_Corr")
+    ]
+    if matches:
+        if len(matches) > 1:
+            print_flush(
+                f"Warning: multiple {tag} histograms matched histName={hist_name} "
+                f"for {proc}: {matches}. Using {matches[0]}"
+            )
+        return matches[0]
+    # Fallback keeps older Z files usable if their naming is less strict.
+    fallback_matches = [
+        name
+        for name in output
+        if tag in name and name.endswith("_Corr")
+    ]
+
+    if fallback_matches:
+        print_flush(
+            f"Warning: no {tag} histogram matched histName={hist_name} for {proc}. "
+            f"Falling back to {fallback_matches[0]}"
+        )
+        return fallback_matches[0]
+    return None
+
+def load_corr_hists(results, signal_procs, hist_name, tag):
+    hists = {}
+    names = {}
+
+    for proc in signal_procs:
+        corr_name = find_corr_hist_name(results, proc, hist_name, tag)
+        if corr_name is None:
+            print_flush(
+                f"Warning: no {tag} _Corr histogram found for {proc} "
+                f"with histName={hist_name}"
+            )
+            continue
+
+        hists[proc] = get_hist(results, proc, corr_name)
+        names[proc] = corr_name
+
+        print_flush(f"Found {tag} correction histogram for {proc}: {corr_name}")
+        print_flush(f"  axes: {[ax.name for ax in hists[proc].axes]}")
+
+    return hists, names
+
+def vars_labels(h):
+    return [str(v) for v in h.axes["vars"]]
+
+def is_central_pdf_label(label):
+    return label == "central" or label.startswith("pdf0")
+
+def choose_existing_label(labels, candidates):
+    for candidate in candidates:
+        if candidate in labels:
+            return candidate
+    return None
+
+def pdf_pairs_from_vars(labels):
+    pdf_labels = [
+        label
+        for label in labels
+        if not is_central_pdf_label(label) and "_as_" not in label
+    ]
+    down_labels = [label for label in pdf_labels if label.endswith("Down")]
+    up_labels = [label for label in pdf_labels if label.endswith("Up")]
+
+    if down_labels and up_labels:
+        bases = sorted(
+            set(
+                label[:-4] if label.endswith("Down") else label[:-2]
+                for label in down_labels + up_labels
+            )
+        )
+
+        pairs = []
+        for base in bases:
+            down = f"{base}Down"
+            up = f"{base}Up"
+
+            if down in pdf_labels and up in pdf_labels:
+                pairs.append((up, down, base))
+            else:
+                print_flush(f"Skipping incomplete PDF pair for {base}")
+
+        return pairs
+    pairs = []
+    for up, down in zip(pdf_labels[1::2], pdf_labels[2::2]):
+        pairs.append((up, down, f"{up}_{down}"))
+    return pairs
+
+# ----------------------------------------------
+# load inputs
+# ----------------------------------------------
+infile_path = os.path.abspath(args.infile)
+if not os.path.exists(infile_path):
+    raise FileNotFoundError(f"Input file not found: {infile_path}")
+
+h5file = h5py.File(infile_path, "r")
+results = base_io.load_results_h5py(h5file)
+
+hist_name = args.histName
+
+all_procs = [p for p in results.keys() if p != "meta_info"]
+print_flush(f"All processes found in file: {all_procs}")
+
+if args.procFilters:
+    procs_to_use = [
+        p for p in all_procs
+        if any(filt in p for filt in args.procFilters)
+    ]
+else:
+    procs_to_use = all_procs
+
+mc_procs = procs_to_use
+
+signal_procs = [
+    p for p in mc_procs
+    if any(filt in p for filt in args.signalFilters)
+]
+
+background_procs = [
+    p for p in mc_procs
+    if p not in signal_procs
+]
+
+print_flush(f"Processes after filtering: {procs_to_use}")
+print_flush(f"Signal processes: {signal_procs}")
+print_flush(f"Background processes: {background_procs}")
+
+# --------------------------
+# load nominal histograms
+# --------------------------
+h_mc_dict = {}
+
+for proc in mc_procs:
+    if has_hist(results, proc, hist_name):
+        h_mc_dict[proc] = get_hist(results, proc, hist_name)
+    else:
+        print_flush(f"Warning: missing nominal histogram {hist_name} for {proc}")
+
+if not h_mc_dict:
+    raise RuntimeError(f"No MC histograms found for histName={hist_name}")
+
+# -----------------------------------------------
+# load correction histograms 
+# -----------------------------------------------
+h_pdfas_corr_dict, pdfas_names = load_corr_hists(
+    results,
+    signal_procs,
+    hist_name,
+    "pdfas",
+)
+
+h_pdfvars_corr_dict, pdfvars_names = load_corr_hists(
+    results,
+    signal_procs,
+    hist_name,
+    "pdfvars",
+)
+
+h5file.close()
+
+# -------------------
+# Build Asimov data
+# -------------------
+if args.asimovMode == "first":
+    first_mc_proc = list(h_mc_dict.keys())[0]
+    h_data = h_mc_dict[first_mc_proc].copy()
+    print_flush(f"Using MC process '{first_mc_proc}' as expected data")
+else:
+    h_data = None
+    for proc, h in h_mc_dict.items():
+        h_data = add_hist(h_data, h)
+    print_flush(f"Using sum of {len(h_mc_dict)} MC processes as expected data")
+
+
+# Nominal histograms should not usually have vars, but keep old behavior.
+if hasattr(h_data, "axes") and "vars" in h_data.axes.name:
+    h_data_base = h_data[{"vars": 0}]
+    h_mc_base = {proc: h[{"vars": 0}] for proc, h in h_mc_dict.items()}
+else:
+    h_data_base = h_data
+    h_mc_base = h_mc_dict
+
+# ----------------------------------
+# write rabbit tensor
+# ----------------------------------
+writer = tensorwriter.TensorWriter(
+    sparse=args.sparse,
+    systematic_type=args.systematicType,
+)
+channel_name = "ch0"
+writer.add_channel(h_data_base.axes, channel_name)
+writer.add_data(h_data_base, channel_name)
+
+# add the signal-like processes first, then backgrounds.
+for proc in signal_procs:
+    if proc in h_mc_base:
+        writer.add_process(h_mc_base[proc], proc, channel_name, signal=False)
+
+for proc in background_procs:
+    if proc in h_mc_base:
+        writer.add_process(h_mc_base[proc], proc, channel_name, signal=False)
+
+# -------------------------------------
+# PDF systematics from *_pdfvars*_Corr
+# -------------------------------------
+for proc_name in signal_procs:
+    if proc_name not in h_mc_base:
+        continue
+
+    if proc_name not in h_pdfvars_corr_dict:
+        print_flush(f"Warning: no pdfvars _Corr histogram loaded for {proc_name}")
+        continue
+
+    h_pdfvars = h_pdfvars_corr_dict[proc_name]
+
+    if "vars" not in h_pdfvars.axes.name:
+        print_flush(
+            f"Warning: pdfvars histogram for {proc_name} has no vars axis. "
+            f"Axes: {[ax.name for ax in h_pdfvars.axes]}"
+        )
+        continue
+
+    labels = vars_labels(h_pdfvars)
+    print_flush(f"{proc_name} pdfvars labels: {labels[:8]}... total={len(labels)}")
+
+    pdf_pairs = pdf_pairs_from_vars(labels)
+
+    if not pdf_pairs:
+        print_flush(f"Warning: no PDF variation pairs found for {proc_name}")
+        continue
+
+    n_added = 0
+
+    for var_up, var_down, syst_name in pdf_pairs:
+        h_up = h_pdfvars[{"vars": var_up}]
+        h_down = h_pdfvars[{"vars": var_down}]
+
+        h_up = project_to_nominal_axes(h_up, h_mc_base[proc_name])
+        h_down = project_to_nominal_axes(h_down, h_mc_base[proc_name])
+
+        writer.add_systematic(
+            [h_up, h_down],
+            syst_name,
+            proc_name,
+            channel_name,
+            constrained=True,
+        )
+
+        n_added += 1
+
+    print_flush(f"Added {n_added} PDF systematic pairs for {proc_name}")
+
+# --------------------------------------
+# alphaS systematic from *_pdfas*_Corr
+# --------------------------------------
+for proc_name in signal_procs:
+    if proc_name not in h_mc_base:
+        continue
+
+    if proc_name not in h_pdfas_corr_dict:
+        print_flush(f"Warning: no pdfas _Corr histogram loaded for {proc_name}")
+        continue
+
+    h_pdfas = h_pdfas_corr_dict[proc_name]
+
+    if "vars" not in h_pdfas.axes.name:
+        print_flush(
+            f"Warning: pdfas histogram for {proc_name} has no vars axis. "
+            f"Axes: {[ax.name for ax in h_pdfas.axes]}"
+        )
+        continue
+
+    labels = vars_labels(h_pdfas)
+    print_flush(f"{proc_name} pdfas labels: {labels}")
+
+    # Preferred Z-like labels, with a fallback for older W test files.
+    var_up = choose_existing_label(
+        labels,
+        [args.alphaSUpName, "alphaSUp"],
+    )
+    var_down = choose_existing_label(
+        labels,
+        [args.alphaSDownName, "alphaSDown"],
+    )
+
+    if var_up is None or var_down is None:
+        print_flush(
+            f"Warning: could not find both alphaS variations for {proc_name}. "
+            f"Available labels: {labels}"
+        )
+        continue
+
+    h_up = h_pdfas[{"vars": var_up}]
+    h_down = h_pdfas[{"vars": var_down}]
+
+    h_up = project_to_nominal_axes(h_up, h_mc_base[proc_name])
+    h_down = project_to_nominal_axes(h_down, h_mc_base[proc_name])
+
+    writer.add_systematic(
+        [h_up, h_down],
+        "pdfAlphaS",
+        proc_name,
+        channel_name,
+        constrained=False,
+        noi=True,
+    )
+
+    print_flush(
+        f"Added pdfAlphaS systematic for {proc_name}: "
+        f"up={var_up}, down={var_down}"
+    )
+
+# -----------------
+# Write output
+# -----------------
+os.makedirs(args.output, exist_ok=True)
+writer.write(
+    outfolder=args.output,
+    outfilename=args.outname,
+)
+
+print_flush(f"Tensor written to: {args.output}/{args.outname}.hdf5")

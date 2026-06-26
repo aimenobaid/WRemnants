@@ -73,10 +73,8 @@ datasets = getDatasets(
 # )
 
 # ------- MiNNLO / CT18Z alphaS weight information --------
-
 procs_v = [d.name for d in datasets if d.name in samples.vprocs]
 theory_corrs = [*args.theoryCorr, *args.ewTheoryCorr]
-
 corr_helpers = theory_corrections.load_corr_helpers(procs_v, theory_corrs)
 helicity_smoothing_helpers = {}
 
@@ -85,21 +83,16 @@ print("Theory corrections:", theory_corrs)
 
 # ---- PDF weight information -----
 ct18z_pdf_info = theory_corrections.make_theory_corr_weight_info(
-    "ct18z",
-    alphas=False,
-    renorm=True,
-)
+    "ct18z",alphas=False,renorm=True)
 ct18z_pdf_weights = ct18z_pdf_info["weights"]
-ct18z_pdf_labels = theory_utils.pdfNamesAsymHessian(
-    len(ct18z_pdf_weights),
-    "pdfCT18Z",
-)
+ct18z_pdf_labels = theory_utils.pdfNamesAsymHessian(len(ct18z_pdf_weights),"pdfCT18Z")
+
 print("Number of CT18Z PDF weights:", len(ct18z_pdf_weights))
 print("First few CT18Z PDF labels:", ct18z_pdf_labels[:6])
 
-# ====================
+# ===================
 #  Histogram axes 
-# ====================
+# ===================
 axis_nLepton = hist.axis.Integer(0, 5, name="nLepton", underflow=False)
 axis_phi = hist.axis.Regular(50, -math.pi, math.pi, circular=True, name="phi")
 eta_bins = [-2.4, -2.1, -1.8, -1.5, -1.2, -0.9, -0.6, -0.3, 0.0,
@@ -121,13 +114,13 @@ axis_w_y = hist.axis.Regular(48, -2.4, 2.4,
     name="w_y", underflow=False, overflow=True)
 
 axis_prefire_tensor = hist.axis.Integer(0, 2, name="prefire_variation", underflow=False, overflow=False)
-axis_alphaS = hist.axis.StrCategory(["central", "alphaSDown", "alphaSUp"],name="alphaS")
-axis_pdf = hist.axis.StrCategory(ct18z_pdf_labels, name="pdf")
+# making the W MiNNLO/CT18Z variation histograms look like the Z_Corr histograms.
+axis_pdfas_vars = hist.axis.StrCategory(["central", "pdfCT18ZNNLO_as_0120", "pdfCT18ZNNLO_as_0116"],name="vars")
+axis_pdfvars_vars = hist.axis.StrCategory(ct18z_pdf_labels,name="vars")
 
 # --- diagnostic ---
 axis_nu_disc_case = hist.axis.Regular(2, 0, 2, name="nu_disc_case", underflow=False, overflow=False)
-# axis_nu_disc_case = hist.axis.Integer(0, 2, name="nu_disc_case", underflow=False, overflow=False)
-axis_nu_disc_norm = hist.axis.Regular(100, -2.0, 1.0, name="nu_disc_norm")
+axis_yW_compare = hist.axis.Regular(100, -5.0, 5.0, name="yW_compare", underflow=False, overflow=False)
 
 # =====================
 # Main graph building 
@@ -160,15 +153,15 @@ def build_graph(df, dataset):
     df = df.Define("nLepton", "nElectron + nMuon") 
 
     # ------ MET kinematics ------
-    # For now using stored NanoAOD MET directly. Later can replace with recoil-corrected MET from
-    # recoilHelper.recoil_W.
+    # For now using stored NanoAOD MET directly. 
+    # can replace with recoil-corrected MET from recoilHelper.recoil_W later.
     df = df.Alias("MET_corr_rec_pt", "MET_pt")
     df = df.Alias("MET_corr_rec_phi", "MET_phi")
     df = (
         df.Define("met_pt", "MET_corr_rec_pt")
         .Define("met_phi", "MET_corr_rec_phi")
     )
-    # df = df.Filter("met_pt > 25", "MET requirement") 
+    df = df.Filter("met_pt > 30", "MET requirement") 
 
     # ------- Muon kinematics -------
     MU_MASS = 0.105658
@@ -199,105 +192,77 @@ def build_graph(df, dataset):
           .Define("w_py", "mu_py + met_py")
           .Define("w_pt", "std::sqrt(w_px*w_px + w_py*w_py)")
           .Define("w_phi", "std::atan2(w_py, w_px)")
-        #   .Define("nu_pz",
-        #             """
-        #             const double mW = 80.379;
-        #             const double ptl2 = mu_pt * mu_pt;
-        #             const double A = mW*mW + 2.0*(mu_px*met_px + mu_py*met_py);
-        #             const double disc = A*A - 4.0*ptl2*met_pt*met_pt;
+          # to be fixed: 
+          .Define("nu_disc",
+            """
+            const double mW = 80.379;
+            const double ptl2 = mu_pt * mu_pt;
+            const double A = mW*mW + 2.0*(mu_px*met_px + mu_py*met_py);
+            return A*A - 4.0*ptl2*met_pt*met_pt;
+            """)
+          .Define("met_pt_for_w_y",
+            """
+            const double mW = 80.379;
+            const double met = static_cast<double>(met_pt);
+            if (nu_disc >= 0.0) {
+                return met;
+            }
+            const double mt2 = 2.0 * mu_pt * met * (1.0 - std::cos(dphi_mu_met));
+            if (mt2 <= 0.0) {
+                return met;
+            }
+            const double k = (mW*mW) / mt2;
+            return k * met;
+            """)
+          .Define("nu_pz",
+            """
+            const double mW = 80.379;
+            const double ptl2 = mu_pt * mu_pt;
 
-        #             double sqrt_disc = 0.0;
-        #             if (disc > 0.0) {
-        #                 sqrt_disc = std::sqrt(disc);
-        #             }
-        #             const double sol1 = (A*mu_pz + mu_E*sqrt_disc)/(2.0*ptl2);
-        #             const double sol2 = (A*mu_pz - mu_E*sqrt_disc)/(2.0*ptl2);
-        #             if (std::fabs(sol1) < std::fabs(sol2)) {
-        #                 return sol1;
-        #             } else {
-        #             return sol2;
-        #             }
-        #             """)
-        #   .Define("nu_E", "std::sqrt(met_pt*met_pt + nu_pz*nu_pz)")
-        #   .Define("w_E","nu_E + mu_E")
-        #   .Define("w_pz", "mu_pz + nu_pz")
-        #   .Define("w_y",
-        #     """
-        #     const double num = w_E + w_pz;
-        #     const double den = w_E - w_pz;
-        #     if (num <= 0.0 || den <= 0.0) return -999.0;
-        #     return 0.5 * std::log(num/den);
-        #     """,
-          .Define("ptl2", "mu_pt * mu_pt")
-          .Define("nu_A", "80.379*80.379 + 2.0*(mu_px*met_px + mu_py*met_py)")
-          .Define("nu_disc", "nu_A*nu_A - 4.0*ptl2*met_pt*met_pt")
-          .Define("nu_disc_norm", "nu_A != 0.0 ? nu_disc/(nu_A*nu_A) : 0.0")
-          .Define("nu_disc_case", "nu_disc < 0.0 ? 0.5 : 1.5")
-          .Define("nu_sqrt_disc", "nu_disc > 0.0 ? std::sqrt(nu_disc) : 0.0")
+            if (ptl2 <= 0.0) {
+                return 0.0;
+            }
 
-          .Define("nu_pz_sol_plus",
-              "(nu_A*mu_pz + mu_E*nu_sqrt_disc)/(2.0*ptl2)")
-          .Define("nu_pz_sol_minus",
-              "(nu_A*mu_pz - mu_E*nu_sqrt_disc)/(2.0*ptl2)")
+            const double A = mW*mW + 2.0*(mu_px*met_px + mu_py*met_py);
+            const double disc = A*A - 4.0*ptl2*met_pt*met_pt;
 
-          .Define("nu_pz_smallAbs",
-              "std::fabs(nu_pz_sol_plus) < std::fabs(nu_pz_sol_minus) ? nu_pz_sol_plus : nu_pz_sol_minus")
-          .Define("nu_pz_largeAbs",
-              "std::fabs(nu_pz_sol_plus) > std::fabs(nu_pz_sol_minus) ? nu_pz_sol_plus : nu_pz_sol_minus")
+            if (disc >= 0.0) {
+                const double sqrt_disc = std::sqrt(disc);
+                const double sol_plus  = (A*mu_pz + mu_E*sqrt_disc)/(2.0*ptl2);
+                const double sol_minus = (A*mu_pz - mu_E*sqrt_disc)/(2.0*ptl2);
+                if (std::fabs(sol_plus) < std::fabs(sol_minus)) {
+                    return sol_plus;
+                } else {
+                    return sol_minus;
+                }
+            }
 
-          # Current prescription: smaller |pz_nu|
-          .Define("nu_pz", "nu_pz_smallAbs")
-          .Define("nu_E", "std::sqrt(met_pt*met_pt + nu_pz*nu_pz)")
-          .Define("w_E", "nu_E + mu_E")
+            // Negative-discriminant case:
+            // rescale neutrino pT so that mT(W) = mW, giving one real pz solution.
+            const double met_px_use = met_pt_for_w_y * std::cos(met_phi);
+            const double met_py_use = met_pt_for_w_y * std::sin(met_phi);
+            const double A_projected = mW*mW + 2.0*(mu_px*met_px_use + mu_py*met_py_use);
+            return (A_projected * mu_pz)/(2.0*ptl2);
+            """)
+          .Define("nu_E",
+              "std::sqrt(met_pt_for_w_y*met_pt_for_w_y + nu_pz*nu_pz)"
+              )
+          .Define("w_E", "mu_E + nu_E")
           .Define("w_pz", "mu_pz + nu_pz")
           .Define("w_y",
             """
             const double num = w_E + w_pz;
             const double den = w_E - w_pz;
-            if (num <= 0.0 || den <= 0.0) return -999.0;
-            return 0.5 * std::log(num/den);
-            """)
 
-          # Alternative 1: larger |pz_nu| solution
-          .Define("nu_E_largeAbs",
-              "std::sqrt(met_pt*met_pt + nu_pz_largeAbs*nu_pz_largeAbs)")
-          .Define("w_E_largeAbs", "nu_E_largeAbs + mu_E")
-          .Define("w_pz_largeAbs", "mu_pz + nu_pz_largeAbs")
-          .Define("w_y_largeAbs",
-            """
-            const double num = w_E_largeAbs + w_pz_largeAbs;
-            const double den = w_E_largeAbs - w_pz_largeAbs;
-            if (num <= 0.0 || den <= 0.0) return -999.0;
-            return 0.5 * std::log(num/den);
-            """)
+            if (num <= 0.0 || den <= 0.0) {
+                return -999.0;
+            }
 
-          # Alternative 2: projected-MET treatment for negative discriminant
-          .Define("met_scale_to_mW",
-            """
-            const double mW = 80.379;
-            const double denom = 2.0 * mu_pt * met_pt * (1.0 - std::cos(dphi_mu_met));
-            if (denom <= 0.0) return 1.0;
-            return (mW*mW)/denom;
-            """)
-          .Define("met_pt_projected",
-              "nu_disc < 0.0 ? met_scale_to_mW * met_pt : met_pt")
-          .Define("met_px_projected", "met_pt_projected * std::cos(met_phi)")
-          .Define("met_py_projected", "met_pt_projected * std::sin(met_phi)")
-          .Define("nu_A_projected",
-                  "80.379*80.379 + 2.0*(mu_px*met_px_projected + mu_py*met_py_projected)")
-          .Define("nu_pz_projected",
-              "nu_disc < 0.0 ? (nu_A_projected * mu_pz)/(2.0*ptl2) : nu_pz_smallAbs")
-          .Define("nu_E_projected",
-              "std::sqrt(met_pt_projected*met_pt_projected + nu_pz_projected*nu_pz_projected)")
-          .Define("w_E_projected", "nu_E_projected + mu_E")
-          .Define("w_pz_projected", "mu_pz + nu_pz_projected")
-          .Define("w_y_projected",
-            """
-            const double num = w_E_projected + w_pz_projected;
-            const double den = w_E_projected - w_pz_projected;
-            if (num <= 0.0 || den <= 0.0) return -999.0;
             return 0.5 * std::log(num/den);
             """)
+          # diagnostic
+          .Define("nu_disc_case", "nu_disc < 0.0 ? 0.5 : 1.5")
+          
     )
 
     df = df.Filter("w_mt > 40", "W transverse mass requirement")
@@ -309,14 +274,47 @@ def build_graph(df, dataset):
     else:
         df = df.Define("exp_weight", "weight*L1PreFiringWeight_Nom")
         df = theory_corrections.define_theory_weights_and_corrs(
-        df,dataset.name, corr_helpers, args, helicity_smoothing_helpers=helicity_smoothing_helpers,
-    )
+            df,dataset.name, corr_helpers, args, helicity_smoothing_helpers=helicity_smoothing_helpers,
+        )
+        df = df.Define(
+            "gen_w_y",
+            """
+            int best = -1;
+            double best_pt = -1.0;
+            for (int i = 0; i < nGenPart; ++i) {
+                const bool isW = std::abs(GenPart_pdgId[i]) == 24;
+                const bool isLastCopy = (GenPart_statusFlags[i] & (1 << 13));
 
-    # ==========
+                if (isW && isLastCopy && GenPart_pt[i] > best_pt) {
+                    best = i;
+                    best_pt = GenPart_pt[i];
+                }
+            }
+            if (best < 0) {
+                return -999.0;
+            }
+            ROOT::Math::PtEtaPhiMVector gen_w_p4(
+                GenPart_pt[best],
+                GenPart_eta[best],
+                GenPart_phi[best],
+                GenPart_mass[best]
+            );
+            const double E = gen_w_p4.E();
+            const double pz = gen_w_p4.Pz();
+            const double num = E + pz;
+            const double den = E - pz;
+            if (num <= 0.0 || den <= 0.0) {
+                return -999.0;
+            }
+            return 0.5 * std::log(num / den);
+            """
+        )
+
+    # ===========
     # Histograms 
     # ===========
 
-    # ===== nominal hists ====
+    # ===== Nominal Hists ====
 
     # ------ Event and muon kinematics -----
     hist_nLepton = df.HistoBoost("nLepton", [axis_nLepton], ["nLepton", "nominal_weight"])
@@ -350,93 +348,80 @@ def build_graph(df, dataset):
 
     # ------ diagnostic hists ----
     hist_nu_disc_case = df.HistoBoost("nu_disc_case",[axis_nu_disc_case],["nu_disc_case","nominal_weight"])
-    hist_nu_disc_norm = df.HistoBoost("nu_disc_norm",[axis_nu_disc_norm],["nu_disc_norm","nominal_weight"])
-    hist_w_y_smallAbs = df.HistoBoost("w_y_smallAbs",[axis_w_y],["w_y","nominal_weight"])
-    hist_w_y_largeAbs = df.HistoBoost("w_y_largeAbs",[axis_w_y],["w_y_largeAbs","nominal_weight"])
-    hist_w_y_projected = df.HistoBoost("w_y_projected",[axis_w_y],["w_y_projected","nominal_weight"])
+
 
     results += [
         hist_nLepton,
         hist_mu_pt,
         hist_mu_eta,
-        hist_mu_phi,
         hist_mu_charge,
         hist_met_pt,
-        hist_met_phi,
         hist_mupt_eta_plus,
         hist_mupt_eta_minus,
         hist_w_mt,
         hist_w_pt,
-        hist_w_phi,
-        hist_wpt_y_minus,
-        hist_wpt_y_plus,
+
+        # hist_mu_phi,
+        # hist_met_phi,
+        # hist_w_phi,
+
+        # hist_wpt_y_minus,
+        # hist_wpt_y_plus,
+
         # hist_mu_relIso,
         # hist_mu_dxy,
         # hist_mu_relIso_dxy,
-        hist_nu_disc_case,
-        hist_nu_disc_norm,
-        hist_w_y_smallAbs,
-        hist_w_y_largeAbs,
-        hist_w_y_projected,
+
+        # hist_nu_disc_case,
     ]
 
     # ===== alphaS variation histograms (MC ONLY) ======
     if not dataset.is_data:
-        hist_w_pt_alphaS = df.HistoBoost("w_pt_alphaS",[axis_w_pt],["w_pt", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
-        hist_w_mt_alphaS = df.HistoBoost("w_mt_alphaS",[axis_w_mt],["w_mt", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
-        hist_w_y_alphaS = df.HistoBoost("w_y_alphaS",[axis_w_y],["w_y","pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
-        hist_w_y_plus_alphaS = df_plus.HistoBoost("w_y_plus_alphaS",[axis_w_y],
-            ["w_y", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
-        hist_w_y_minus_alphaS = df_minus.HistoBoost("w_y_minus_alphaS",[axis_w_y],
-            ["w_y", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
-        hist_mupt_eta_plus_alphaS = df_plus.HistoBoost("mupt_eta_plus_alphaS",[axis_mu_pt, axis_mu_eta],
-            ["mu_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
-        hist_mupt_eta_minus_alphaS = df_minus.HistoBoost("mupt_eta_minus_alphaS",[axis_mu_pt, axis_mu_eta],
-            ["mu_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
-        hist_wpt_y_plus_alphaS = df_plus.HistoBoost("wpt_y_plus_alphaS",[axis_w_pt, axis_w_y],
-            ["w_pt", "w_y", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
-        hist_wpt_y_minus_alphaS = df_minus.HistoBoost("wpt_y_minus_alphaS",[axis_w_pt, axis_w_y],
-            ["w_pt", "w_y", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_alphaS])
+        hist_w_pt_pdfas_corr = df.HistoBoost("w_pt_minnlo_pdfas_Corr",[axis_w_pt],["w_pt", "pdfCT18ZASWeights_tensor"],
+            tensor_axes=[axis_pdfas_vars])
+        hist_w_mt_pdfas_corr = df.HistoBoost("w_mt_minnlo_pdfas_Corr",[axis_w_mt],["w_mt", "pdfCT18ZASWeights_tensor"],
+            tensor_axes=[axis_pdfas_vars])
+        hist_mupt_eta_plus_pdfas_corr = df_plus.HistoBoost("mupt_eta_plus_minnlo_pdfas_Corr",[axis_mu_pt, axis_mu_eta],
+            ["mu_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
+        hist_mupt_eta_minus_pdfas_corr = df_minus.HistoBoost("mupt_eta_minus_minnlo_pdfas_Corr",[axis_mu_pt, axis_mu_eta],
+            ["mu_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
 
         results += [
-            hist_w_pt_alphaS,
-            hist_w_mt_alphaS,
-            hist_w_y_alphaS,
-            hist_mupt_eta_plus_alphaS,
-            hist_mupt_eta_minus_alphaS,
-            hist_wpt_y_plus_alphaS,
-            hist_wpt_y_minus_alphaS,
-            hist_w_y_plus_alphaS,
-            hist_w_y_minus_alphaS,
+            hist_w_pt_pdfas_corr,
+            hist_w_mt_pdfas_corr,
+            hist_mupt_eta_plus_pdfas_corr,
+            hist_mupt_eta_minus_pdfas_corr,
         ]
 
     # ===== pdf variation histograms (MC ONLY) ========
-    if not dataset.is_data: 
-        hist_w_pt_pdf = df.HistoBoost("w_pt_pdf",[axis_w_pt],["w_pt", "pdfCT18ZWeights_tensor"],
-            tensor_axes=[axis_pdf])
-        hist_w_mt_pdf = df.HistoBoost("w_mt_pdf",[axis_w_mt],["w_mt", "pdfCT18ZWeights_tensor"],
-            tensor_axes=[axis_pdf])
-        hist_w_y_pdf = df.HistoBoost("w_y_pdf",[axis_w_y],["w_y", "pdfCT18ZWeights_tensor"],
-            tensor_axes=[axis_pdf])
-        hist_mupt_eta_plus_pdf = df_plus.HistoBoost("mupt_eta_plus_pdf",[axis_mu_pt, axis_mu_eta],["mu_pt", "mu_eta", "pdfCT18ZWeights_tensor"],
-            tensor_axes=[axis_pdf])
-        hist_mupt_eta_minus_pdf = df_minus.HistoBoost("mupt_eta_minus_pdf",[axis_mu_pt, axis_mu_eta],["mu_pt", "mu_eta", "pdfCT18ZWeights_tensor"],
-            tensor_axes=[axis_pdf])
-        hist_wpt_y_plus_pdf = df_plus.HistoBoost("wpt_y_plus_pdf",[axis_w_pt, axis_w_y],["w_pt", "w_y", "pdfCT18ZWeights_tensor"],
-            tensor_axes=[axis_pdf])
-        hist_wpt_y_minus_pdf = df_minus.HistoBoost("wpt_y_minus_pdf",[axis_w_pt, axis_w_y],["w_pt", "w_y", "pdfCT18ZWeights_tensor"],
-            tensor_axes=[axis_pdf])
-        
+    if not dataset.is_data:
+        hist_w_pt_pdfvars_corr = df.HistoBoost("w_pt_minnlo_pdfvars_Corr",[axis_w_pt],
+            ["w_pt", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
+        hist_w_mt_pdfvars_corr = df.HistoBoost(
+            "w_mt_minnlo_pdfvars_Corr",[axis_w_mt],["w_mt", "pdfCT18ZWeights_tensor"],
+            tensor_axes=[axis_pdfvars_vars])
+        hist_mupt_eta_plus_pdfvars_corr = df_plus.HistoBoost("mupt_eta_plus_minnlo_pdfvars_Corr",[axis_mu_pt, axis_mu_eta],
+            ["mu_pt", "mu_eta", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
+        hist_mupt_eta_minus_pdfvars_corr = df_minus.HistoBoost("mupt_eta_minus_minnlo_pdfvars_Corr",[axis_mu_pt, axis_mu_eta],
+            ["mu_pt", "mu_eta", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
+
         results += [
-            hist_w_pt_pdf,
-            hist_w_mt_pdf,
-            hist_w_y_pdf,
-            hist_mupt_eta_plus_pdf,
-            hist_mupt_eta_minus_pdf,
-            hist_wpt_y_plus_pdf,
-            hist_wpt_y_minus_pdf,
+            hist_w_pt_pdfvars_corr,
+            hist_w_mt_pdfvars_corr,
+            hist_mupt_eta_plus_pdfvars_corr,
+            hist_mupt_eta_minus_pdfvars_corr,
         ]
 
+    # ===== gen comparison (MC ONLY) ========
+    if not dataset.is_data: 
+        hist_w_y_reco_compare = df.HistoBoost("w_y_reco_compare",[axis_yW_compare],["w_y", "nominal_weight"])
+        hist_gen_w_y_compare = df.HistoBoost("gen_w_y_compare",[axis_yW_compare],["gen_w_y", "nominal_weight"])
+
+        results += [
+            hist_w_y_reco_compare,
+            hist_gen_w_y_compare,
+        ]
+    
     # ============= Prefiring variations ==================
 
     if not dataset.is_data:
