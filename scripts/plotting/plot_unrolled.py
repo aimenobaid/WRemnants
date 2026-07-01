@@ -20,18 +20,16 @@ MC_GROUPS = {
     r"$W\rightarrow\mu\nu$": ["Wplusmunu_2017G", "Wminusmunu_2017G", "Wmunu"],
 }
 
-# MC_COLORS = [
-#     "#7DB7E8",  # soft blue
-#     "#F4A259",  # soft orange
-#     "#7BC67B",  # soft green
-#     "#C44E52",  # muted red
-# ]
-
+MC_COLORS = [
+    "#7DB7E8",  #  blue
+    "#F4A259",  # orange
+    "#7BC67B",  # green
+    "#C44E52",  # red
+]
 
 def load_results(infile):
     obj = input_tools.read_infile(infile)
     return obj[0] if isinstance(obj, tuple) else obj
-
 
 def samples_in_file(results):
     return [k for k in results.keys() if k != "meta_info"]
@@ -64,20 +62,20 @@ def sum_hists(results, samples, histname):
     return hsum
 
 
-# def get_data_charge_hists(results):
-#     if "Data" in results:
-#         data_sample = "Data"
-#     else:
-#         data_samples = [s for s in samples_in_file(results) if s.startswith("SingleMuon")]
-#         if len(data_samples) != 1:
-#             raise RuntimeError(f"Expected one data sample, found {data_samples}")
-#         data_sample = data_samples[0]
+def get_data_charge_hists(results):
+    if "Data" in results:
+        data_sample = "Data"
+    else:
+        data_samples = [s for s in samples_in_file(results) if s.startswith("SingleMuon")]
+        if len(data_samples) != 1:
+            raise RuntimeError(f"Expected one data sample, found {data_samples}")
+        data_sample = data_samples[0]
 
-#     return (
-#         read_hist(results, data_sample, "wpt_y_minus"),
-#         read_hist(results, data_sample, "wpt_y_plus"),
-#         "Data",
-#     )
+    return (
+        read_hist(results, data_sample, "wpt_mueta_minus"),
+        read_hist(results, data_sample, "wpt_mueta_plus"),
+        "Data",
+    )
 
 def get_mc_charge_stacks(results):
     minus_hists = []
@@ -85,8 +83,8 @@ def get_mc_charge_stacks(results):
     labels = []
 
     for label, samples in MC_GROUPS.items():
-        h_minus = sum_hists(results, samples, "wpt_y_minus")
-        h_plus = sum_hists(results, samples, "wpt_y_plus")
+        h_minus = sum_hists(results, samples, "wpt_mueta_minus")
+        h_plus = sum_hists(results, samples, "wpt_mueta_plus")
 
         if h_minus is None or h_plus is None:
             continue
@@ -102,7 +100,7 @@ def get_mc_charge_stacks(results):
 
 
 def unroll(h2d):
-    return hh.unrolledHist(h2d, obs=["w_pt", "w_y"])
+    return hh.unrolledHist(h2d, obs=["w_pt", "mu_eta"])
 
 
 def draw_mc_panel(ax, h2d_list, labels, colors, charge_label):
@@ -138,23 +136,23 @@ def draw_mc_panel(ax, h2d_list, labels, colors, charge_label):
     plot_tools.addLegend(ax, ncols=1, loc="upper right", text_size="small")
 
 
-# def draw_data_panel(ax, h2d, charge_label, source_label):
-#     h = unroll(h2d)
-    # hep.histplot(
-    #     h,
-    #     ax=ax,
-    #     histtype="errorbar",
-    #     color="black",
-    #     label=source_label,
-    #     flow="none",
-    # )
+def draw_data_panel(ax, h2d, charge_label, source_label):
+    h = unroll(h2d)
+    hep.histplot(
+        h,
+        ax=ax,
+        histtype="errorbar",
+        color="black",
+        label=source_label,
+        flow="none",
+    )
 
-    # ax.text(0.035, 0.86, charge_label, transform=ax.transAxes, fontsize=12)
-    # ax.set_ylabel("Events/bin", fontsize=13)
-    # ax.set_xlabel("")   # <- important
-    # ax.tick_params(axis="both", which="both", direction="in", top=True, right=True)
-    # ax.minorticks_on()
-    # plot_tools.addLegend(ax, ncols=1, loc="upper right", text_size="small")
+    ax.text(0.035, 0.86, charge_label, transform=ax.transAxes, fontsize=12)
+    ax.set_ylabel("Events/bin", fontsize=13)
+    ax.set_xlabel("")   # <- important
+    ax.tick_params(axis="both", which="both", direction="in", top=True, right=True)
+    ax.minorticks_on()
+    plot_tools.addLegend(ax, ncols=1, loc="upper right", text_size="small")
 
 
 def make_plot(infile, outdir, mode, lumi, com, xlim, logy):
@@ -178,7 +176,7 @@ def make_plot(infile, outdir, mode, lumi, com, xlim, logy):
             axes[0],
             h_minus_list,
             labels,
-            # MC_COLORS,
+            MC_COLORS,
             r"Charge = -1",
         )
 
@@ -186,37 +184,37 @@ def make_plot(infile, outdir, mode, lumi, com, xlim, logy):
             axes[1],
             h_plus_list,
             labels,
-            # MC_COLORS,
+            MC_COLORS,
             r"Charge = +1",
         )
 
-        basename = "unrolled_reco_wpt_y_chargeSplit"
+        basename = "unrolled_wpt_mueta_chargeSplit"
 
-    # else:
-    #     h_minus_2d, h_plus_2d, source_label = get_data_charge_hists(results)
+    else:
+        h_minus_2d, h_plus_2d, source_label = get_data_charge_hists(results)
 
-    #     draw_data_panel(
-    #         axes[0],
-    #         h_minus_2d,
-    #         r"charge = -1",
-    #         source_label,
-    #     )
+        draw_data_panel(
+            axes[0],
+            h_minus_2d,
+            r"charge = -1",
+            source_label,
+        )
 
-    #     draw_data_panel(
-    #         axes[1],
-    #         h_plus_2d,
-    #         r"charge = +1",
-    #         source_label,
-    #     )
+        draw_data_panel(
+            axes[1],
+            h_plus_2d,
+            r"charge = +1",
+            source_label,
+        )
 
-        # basename = "unrolled_reco_mupt_absEta_chargeSplit_data"
+        basename = "unrolled_wpt_mueta_chargeSplit_data"
 
     # Hide top-panel x tick labels without breaking shared-axis formatting
     axes[0].tick_params(axis="x", labelbottom=False)
 
     # Make sure only the bottom panel carries the x label
     axes[0].set_xlabel("")
-    axes[1].set_xlabel(r"Reco $(p_T^W, y^W)$ bin", fontsize=14)
+    axes[1].set_xlabel(r"$(p_T^W, \eta^{\mu})$ bin", fontsize=14)
 
     # Bottom-axis range and ticks
     axes[1].set_xlim(*xlim)

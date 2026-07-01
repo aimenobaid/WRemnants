@@ -2,6 +2,8 @@ import argparse
 import h5py
 import os
 import sys
+import hist
+
 
 def print_flush(*args, **kwargs):
     print(*args, **kwargs)
@@ -37,6 +39,9 @@ parser.add_argument("--systematicType",choices=["log_normal", "normal"],default=
     help="Probability density for systematic variations")
 parser.add_argument("--alphaSUpName",default="pdfCT18ZNNLO_as_0120", help="Name of the alphaS-up variation on the vars axis")
 parser.add_argument("--alphaSDownName",default="pdfCT18ZNNLO_as_0116",help="Name of the alphaS-down variation on the vars axis")
+parser.add_argument("--wChargeAxis", action="store_true", 
+    help=("For W only: build a single tensor with a reco charge axis by combining"
+        "<histName>_minus and <histName>_plus into one histogram."))
 args = parser.parse_args()
 
 # ---------------------------
@@ -171,6 +176,91 @@ def pdf_pairs_from_vars(labels):
         pairs.append((up, down, f"{up}_{down}"))
     return pairs
 
+def make_charge_axis():
+    # Bin 0: charge -1, bin 1: charge +1.
+    return hist.axis.Regular(2,-2.0,2.0,name="charge",underflow=False,overflow=False,
+    )
+
+
+def combine_charge_hists(h_minus, h_plus):
+    if h_minus.axes.name != h_plus.axes.name:
+        raise RuntimeError(
+            f"Cannot combine charge hists with different axes: "
+            f"minus={h_minus.axes.name}, plus={h_plus.axes.name}"
+        )
+
+    axis_charge = make_charge_axis()
+
+    h_charge = hist.Hist(
+        *h_minus.axes,
+        axis_charge,
+        storage=h_minus.storage_type(),
+    )
+
+    # charge bin 0 is negative, charge bin 1 is positive
+    h_charge.view(flow=False)[..., 0] = h_minus.view(flow=False)
+    h_charge.view(flow=False)[..., 1] = h_plus.view(flow=False)
+
+    return h_charge
+
+def load_charge_nominal_hist(results, proc, hist_name):
+    minus_name = f"{hist_name}_minus"
+    plus_name = f"{hist_name}_plus"
+
+    if not has_hist(results, proc, minus_name):
+        print_flush(f"Warning: missing nominal histogram {minus_name} for {proc}")
+        return None
+
+    if not has_hist(results, proc, plus_name):
+        print_flush(f"Warning: missing nominal histogram {plus_name} for {proc}")
+        return None
+
+    h_minus = get_hist(results, proc, minus_name)
+    h_plus = get_hist(results, proc, plus_name)
+
+    h_charge = combine_charge_hists(h_minus, h_plus)
+
+    print_flush(
+        f"Built charge-axis nominal histogram for {proc}: "
+        f"{minus_name} + {plus_name} -> axes {[ax.name for ax in h_charge.axes]}"
+    )
+
+    return h_charge
+
+
+def load_charge_corr_hists(results, signal_procs, hist_name, tag):
+    hists = {}
+    names = {}
+
+    for proc in signal_procs:
+        minus_base = f"{hist_name}_minus"
+        plus_base = f"{hist_name}_plus"
+
+        minus_corr_name = find_corr_hist_name(results, proc, minus_base, tag)
+        plus_corr_name = find_corr_hist_name(results, proc, plus_base, tag)
+
+        if minus_corr_name is None or plus_corr_name is None:
+            print_flush(
+                f"Warning: missing charge-split {tag} _Corr histograms for {proc}. "
+                f"minus={minus_corr_name}, plus={plus_corr_name}"
+            )
+            continue
+
+        h_minus = get_hist(results, proc, minus_corr_name)
+        h_plus = get_hist(results, proc, plus_corr_name)
+
+        h_charge = combine_charge_hists(h_minus, h_plus)
+
+        hists[proc] = h_charge
+        names[proc] = (minus_corr_name, plus_corr_name)
+
+        print_flush(
+            f"Built charge-axis {tag} histogram for {proc}: "
+            f"{minus_corr_name} + {plus_corr_name} -> axes {[ax.name for ax in h_charge.axes]}"
+        )
+
+    return hists, names
+
 # ----------------------------------------------
 # load inputs
 # ----------------------------------------------
@@ -215,11 +305,24 @@ print_flush(f"Background processes: {background_procs}")
 # --------------------------
 h_mc_dict = {}
 
+use_w_charge_axis = args.analysis == "w" and args.wChargeAxis
+
+if use_w_charge_axis:
+    print_flush(
+        f"W charge-axis mode enabled for histName={hist_name}. "
+        f"Will combine {hist_name}_minus and {hist_name}_plus into one tensor axis."
+    )
+
 for proc in mc_procs:
-    if has_hist(results, proc, hist_name):
-        h_mc_dict[proc] = get_hist(results, proc, hist_name)
+    if use_w_charge_axis:
+        h_charge = load_charge_nominal_hist(results, proc, hist_name)
+        if h_charge is not None:
+            h_mc_dict[proc] = h_charge
     else:
-        print_flush(f"Warning: missing nominal histogram {hist_name} for {proc}")
+        if has_hist(results, proc, hist_name):
+            h_mc_dict[proc] = get_hist(results, proc, hist_name)
+        else:
+            print_flush(f"Warning: missing nominal histogram {hist_name} for {proc}")
 
 if not h_mc_dict:
     raise RuntimeError(f"No MC histograms found for histName={hist_name}")
@@ -227,21 +330,34 @@ if not h_mc_dict:
 # -----------------------------------------------
 # load correction histograms 
 # -----------------------------------------------
-h_pdfas_corr_dict, pdfas_names = load_corr_hists(
-    results,
-    signal_procs,
-    hist_name,
-    "pdfas",
-)
+if use_w_charge_axis:
+    h_pdfas_corr_dict, pdfas_names = load_charge_corr_hists(
+        results,
+        signal_procs,
+        hist_name,
+        "pdfas",
+    )
 
-h_pdfvars_corr_dict, pdfvars_names = load_corr_hists(
-    results,
-    signal_procs,
-    hist_name,
-    "pdfvars",
-)
+    h_pdfvars_corr_dict, pdfvars_names = load_charge_corr_hists(
+        results,
+        signal_procs,
+        hist_name,
+        "pdfvars",
+    )
+else:
+    h_pdfas_corr_dict, pdfas_names = load_corr_hists(
+        results,
+        signal_procs,
+        hist_name,
+        "pdfas",
+    )
 
-h5file.close()
+    h_pdfvars_corr_dict, pdfvars_names = load_corr_hists(
+        results,
+        signal_procs,
+        hist_name,
+        "pdfvars",
+    )
 
 # -------------------
 # Build Asimov data

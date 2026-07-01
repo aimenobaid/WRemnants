@@ -102,8 +102,8 @@ axis_mu_pt = hist.axis.Regular(60, 25, 150, name="mu_pt")
 axis_mu_eta = hist.axis.Variable(eta_bins, name="mu_eta", underflow=False, overflow=False)
 axis_mu_charge = hist.axis.Integer(-2, 2, name="mu_charge", underflow=False, overflow=False)
 
-# axis_mu_relIso = hist.axis.Regular(60,0,150, name="mu_relIso")
-# axis_mu_dxy = hist.axis.Regular(60,0,150, name="mu_dxy")
+axis_mu_relIso = hist.axis.Regular(60,0,150, name="mu_relIso")
+axis_mu_dxy = hist.axis.Regular(60,0,150, name="mu_dxy")
 
 axis_met_pt = hist.axis.Regular(60,0,150, name="met_pt")
 axis_met_phi = hist.axis.Regular(50, -math.pi, math.pi, circular=True, name="met_phi")
@@ -322,9 +322,9 @@ def build_graph(df, dataset):
     hist_mu_eta = df.HistoBoost("mu_eta", [axis_mu_eta], ["mu_eta", "nominal_weight"])
     hist_mu_phi = df.HistoBoost("mu_phi", [axis_phi], ["mu_phi", "nominal_weight"])
     hist_mu_charge = df.HistoBoost("mu_charge", [axis_mu_charge], ["mu_charge", "nominal_weight"])
-    # hist_mu_relIso = df.HistoBoost("mu_relIso",[axis_mu_relIso], ["mu_relIso", "nominal_weight"])
-    # hist_mu_dxy = df.HistoBoost("mu_dxy",[axis_mu_dxy],["mu_dxy","nominal_weight"])
-    # hist_mu_relIso_dxy = df.HistoBoost("mu_relIso_dxy",[axis_mu_relIso, axis_mu_dxy],["mu_relIso", "mu_dxy", "nominal_weight"])
+    hist_mu_relIso = df.HistoBoost("mu_relIso",[axis_mu_relIso], ["mu_relIso", "nominal_weight"])
+    hist_mu_dxy = df.HistoBoost("mu_dxy",[axis_mu_dxy],["mu_dxy","nominal_weight"])
+    hist_mu_relIso_dxy = df.HistoBoost("mu_relIso_dxy",[axis_mu_relIso, axis_mu_dxy],["mu_relIso", "mu_dxy", "nominal_weight"])
 
     # ----- MET -----
     hist_met_pt = df.HistoBoost("met_pt", [axis_met_pt], ["met_pt", "nominal_weight"])
@@ -339,13 +339,17 @@ def build_graph(df, dataset):
     df_plus = df.Filter("mu_charge > 0")
     df_minus = df.Filter("mu_charge < 0")
 
-    # Unrolled 2D muon histograms.
+    hist_w_pt_plus = df_plus.HistoBoost("w_pt_plus",[axis_w_pt], ["w_pt", "nominal_weight"])
+    hist_w_pt_minus = df_minus.HistoBoost("w_pt_minus",[axis_w_pt],["w_pt", "nominal_weight"])
+
+    # Unrolled 2D histograms.
     hist_mupt_eta_plus = df_plus.HistoBoost("mupt_eta_plus",[axis_mu_pt, axis_mu_eta],["mu_pt", "mu_eta", "nominal_weight"])
     hist_mupt_eta_minus = df_minus.HistoBoost("mupt_eta_minus",[axis_mu_pt, axis_mu_eta],["mu_pt", "mu_eta", "nominal_weight"])
-    # Unrolled 2D W histograms.
+    hist_wpt_mueta_plus = df_plus.HistoBoost("wpt_mueta_plus",[axis_w_pt, axis_mu_eta],["w_pt", "mu_eta", "nominal_weight"])
+    hist_wpt_mueta_minus = df_minus.HistoBoost("wpt_mueta_minus",[axis_w_pt, axis_mu_eta],["w_pt", "mu_eta", "nominal_weight"])
+
     hist_wpt_y_plus = df_plus.HistoBoost("wpt_y_plus",[axis_w_pt, axis_w_y],["w_pt", "w_y", "nominal_weight"])
     hist_wpt_y_minus = df_minus.HistoBoost("wpt_y_minus",[axis_w_pt, axis_w_y],["w_pt", "w_y", "nominal_weight"])
-
     # ------ diagnostic hists ----
     hist_nu_disc_case = df.HistoBoost("nu_disc_case",[axis_nu_disc_case],["nu_disc_case","nominal_weight"])
 
@@ -360,6 +364,10 @@ def build_graph(df, dataset):
         hist_mupt_eta_minus,
         hist_w_mt,
         hist_w_pt,
+        hist_w_pt_plus,
+        hist_w_pt_minus,
+        hist_wpt_mueta_plus,
+        hist_wpt_mueta_minus,
 
         # hist_mu_phi,
         # hist_met_phi,
@@ -368,9 +376,9 @@ def build_graph(df, dataset):
         # hist_wpt_y_minus,
         # hist_wpt_y_plus,
 
-        # hist_mu_relIso,
-        # hist_mu_dxy,
-        # hist_mu_relIso_dxy,
+        hist_mu_relIso,
+        hist_mu_dxy,
+        hist_mu_relIso_dxy,
 
         # hist_nu_disc_case,
     ]
@@ -379,37 +387,42 @@ def build_graph(df, dataset):
     if not dataset.is_data:
         hist_w_pt_pdfas_corr = df.HistoBoost("w_pt_minnlo_pdfas_Corr",[axis_w_pt],["w_pt", "pdfCT18ZASWeights_tensor"],
             tensor_axes=[axis_pdfas_vars])
-        hist_w_mt_pdfas_corr = df.HistoBoost("w_mt_minnlo_pdfas_Corr",[axis_w_mt],["w_mt", "pdfCT18ZASWeights_tensor"],
+        hist_w_pt_plus_pdfas_corr = df_plus.HistoBoost("w_pt_plus_minnlo_pdfas_Corr", [axis_w_pt], ["w_pt", "pdfCT18ZASWeights_tensor"],
             tensor_axes=[axis_pdfas_vars])
-        hist_mupt_eta_plus_pdfas_corr = df_plus.HistoBoost("mupt_eta_plus_minnlo_pdfas_Corr",[axis_mu_pt, axis_mu_eta],
-            ["mu_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
-        hist_mupt_eta_minus_pdfas_corr = df_minus.HistoBoost("mupt_eta_minus_minnlo_pdfas_Corr",[axis_mu_pt, axis_mu_eta],
-            ["mu_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
+        hist_w_pt_minus_pdfas_corr = df_minus.HistoBoost("w_pt_minus_minnlo_pdfas_Corr", [axis_w_pt], ["w_pt", "pdfCT18ZASWeights_tensor"],
+            tensor_axes=[axis_pdfas_vars])
+        hist_wpt_mueta_plus_pdfas_corr = df_plus.HistoBoost("wpt_mueta_plus_minnlo_pdfas_Corr",[axis_w_pt, axis_mu_eta], 
+            ["w_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
+        hist_wpt_mueta_minus_pdfas_corr = df_minus.HistoBoost("wpt_mueta_minus_minnlo_pdfas_Corr",[axis_w_pt, axis_mu_eta], 
+            ["w_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
 
         results += [
             hist_w_pt_pdfas_corr,
-            hist_w_mt_pdfas_corr,
-            hist_mupt_eta_plus_pdfas_corr,
-            hist_mupt_eta_minus_pdfas_corr,
+            hist_w_pt_plus_pdfas_corr,
+            hist_w_pt_minus_pdfas_corr,
+            hist_wpt_mueta_plus_pdfas_corr,
+            hist_wpt_mueta_minus_pdfas_corr,
         ]
 
-    # ===== pdf variation histograms (MC ONLY) ========
+    # ====== pdf variation histograms (MC ONLY) ========
     if not dataset.is_data:
         hist_w_pt_pdfvars_corr = df.HistoBoost("w_pt_minnlo_pdfvars_Corr",[axis_w_pt],
             ["w_pt", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
-        hist_w_mt_pdfvars_corr = df.HistoBoost(
-            "w_mt_minnlo_pdfvars_Corr",[axis_w_mt],["w_mt", "pdfCT18ZWeights_tensor"],
+        hist_w_pt_plus_pdfvars_corr = df_plus.HistoBoost("w_pt_plus_minnlo_pdfvars_Corr",[axis_w_pt], ["w_pt",  "pdfCT18ZWeights_tensor"],
             tensor_axes=[axis_pdfvars_vars])
-        hist_mupt_eta_plus_pdfvars_corr = df_plus.HistoBoost("mupt_eta_plus_minnlo_pdfvars_Corr",[axis_mu_pt, axis_mu_eta],
-            ["mu_pt", "mu_eta", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
-        hist_mupt_eta_minus_pdfvars_corr = df_minus.HistoBoost("mupt_eta_minus_minnlo_pdfvars_Corr",[axis_mu_pt, axis_mu_eta],
-            ["mu_pt", "mu_eta", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
+        hist_w_pt_minus_pdfvars_corr = df_minus.HistoBoost("w_pt_minus_minnlo_pdfvars_Corr",[axis_w_pt], ["w_pt",  "pdfCT18ZWeights_tensor"],
+            tensor_axes=[axis_pdfvars_vars])
+        hist_wpt_mueta_plus_pdfvars_corr = df_plus.HistoBoost("wpt_mueta_plus_minnlo_pdfvars_Corr",[axis_w_pt, axis_mu_eta],
+            ["w_pt", "mu_eta", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
+        hist_wpt_mueta_minus_pdfvars_corr = df_minus.HistoBoost("wpt_mueta_minus_minnlo_pdfvars_Corr",[axis_w_pt, axis_mu_eta],
+            ["w_pt", "mu_eta", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
 
         results += [
             hist_w_pt_pdfvars_corr,
-            hist_w_mt_pdfvars_corr,
-            hist_mupt_eta_plus_pdfvars_corr,
-            hist_mupt_eta_minus_pdfvars_corr,
+            hist_w_pt_plus_pdfvars_corr,
+            hist_w_pt_minus_pdfvars_corr,
+            hist_wpt_mueta_plus_pdfvars_corr,
+            hist_wpt_mueta_minus_pdfvars_corr,
         ]
 
     # ===== gen comparison (MC ONLY) ========
