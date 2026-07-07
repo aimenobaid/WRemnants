@@ -98,12 +98,12 @@ axis_phi = hist.axis.Regular(50, -math.pi, math.pi, circular=True, name="phi")
 eta_bins = [-2.4, -2.1, -1.8, -1.5, -1.2, -0.9, -0.6, -0.3, 0.0,
             0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4]
 
-axis_mu_pt = hist.axis.Regular(60, 25, 150, name="mu_pt")
+axis_mu_pt = hist.axis.Regular(26, 18, 44, name="mu_pt")
 axis_mu_eta = hist.axis.Variable(eta_bins, name="mu_eta", underflow=False, overflow=False)
 axis_mu_charge = hist.axis.Integer(-2, 2, name="mu_charge", underflow=False, overflow=False)
 
-axis_mu_relIso = hist.axis.Regular(60,0,150, name="mu_relIso")
-axis_mu_dxy = hist.axis.Regular(60,0,150, name="mu_dxy")
+axis_mu_relIso = hist.axis.Regular(80, 0.0, 1.0,name="mu_relIso",underflow=False,overflow=True)
+axis_mu_abs_dxy = hist.axis.Regular(80, 0.0, 0.05,name="mu_abs_dxy",underflow=False,overflow=True)
 
 axis_met_pt = hist.axis.Regular(60,0,150, name="met_pt")
 axis_met_phi = hist.axis.Regular(50, -math.pi, math.pi, circular=True, name="met_phi")
@@ -121,6 +121,13 @@ axis_pdfvars_vars = hist.axis.StrCategory(ct18z_pdf_labels,name="vars")
 # --- diagnostic ---
 axis_nu_disc_case = hist.axis.Regular(2, 0, 2, name="nu_disc_case", underflow=False, overflow=False)
 axis_yW_compare = hist.axis.Regular(100, -5.0, 5.0, name="yW_compare", underflow=False, overflow=False)
+
+# ------- ABCD axes -------
+axis_abcd_pt = hist.axis.Regular(26, 18, 44,name="pt",underflow=False,overflow=False)
+axis_abcd_eta = hist.axis.Regular(48, -2.4, 2.4,name="eta",underflow=False,overflow=False)
+axis_abcd_charge = hist.axis.Regular(2, -2, 2,name="charge",underflow=False,overflow=False)
+axis_abcd_dxy = hist.axis.Variable([0.0, 0.02, 1.0],name="dxy",underflow=False,overflow=False)
+axis_abcd_relIso = hist.axis.Variable([0.0, 0.5, 10.0],name="relIso",underflow=False,overflow=False)
 
 # =====================
 # Main graph building 
@@ -144,14 +151,14 @@ def build_graph(df, dataset):
     df = df.Filter("HLT_HIMu17","Single-muon trigger")
     df = df.Define(
         "goodMu",
-        "Muon_pt > 25 && abs(Muon_eta) < 2.4 && Muon_mediumId && Muon_isGlobal" 
+        "Muon_pt > 18 && abs(Muon_eta) < 2.4 && Muon_mediumId && Muon_isGlobal" 
     )  
     df = df.Define("goodMu_idx", "ROOT::VecOps::Nonzero(goodMu)")
     df = df.Filter("goodMu_idx.size() == 1", "Exactly one good muon")
     df = df.Filter("nElectron == 0", "No electrons in the event")
     df = df.Define("i_mu", "int(goodMu_idx[0])") 
     df = df.Define("nLepton", "nElectron + nMuon") 
-
+    
     # ------ MET kinematics ------
     # For now using stored NanoAOD MET directly. 
     # can replace with recoil-corrected MET from recoilHelper.recoil_W later.
@@ -159,9 +166,9 @@ def build_graph(df, dataset):
     df = df.Alias("MET_corr_rec_phi", "MET_phi")
     df = (
         df.Define("met_pt", "MET_corr_rec_pt")
-        .Define("met_phi", "MET_corr_rec_phi")
+          .Define("met_phi", "MET_corr_rec_phi")
     )
-    df = df.Filter("met_pt > 30", "MET requirement") 
+    # df = df.Filter("met_pt > 25", "MET requirement") 
 
     # ------- Muon kinematics -------
     MU_MASS = 0.105658
@@ -173,9 +180,16 @@ def build_graph(df, dataset):
           # splitting charge (mostly d ubar --> W- and u dbar --> W+)
           .Define("mu_charge", "Muon_charge[i_mu]")
           .Define("mu_relIso", "Muon_pfRelIso04_all[i_mu]") # relative isolation of muon
-          .Define("mu_dxy", "Muon_dxy[i_mu]") # dxy wrt first PV, in cm
+          .Define("mu_dxy", "Muon_dxy[i_mu]")
+          .Define("mu_abs_dxy", "std::fabs(Muon_dxy[i_mu])") # dxy wrt first PV, in cm
+          )
+    df = (
+        df.Define("abcd_pt", "mu_pt")
+          .Define("abcd_eta", "mu_eta")
+          .Define("abcd_charge", "double(mu_charge)")
+          .Define("abcd_dxy", "mu_abs_dxy")
+          .Define("abcd_relIso", "mu_relIso")
     )
-
     # ------- W transverse obs --------
     df = (
         df.Define("dphi_mu_met",
@@ -265,7 +279,7 @@ def build_graph(df, dataset):
           
     )
 
-    df = df.Filter("w_mt > 40", "W transverse mass requirement")
+    # df = df.Filter("w_mt > 40", "W transverse mass requirement")
 
     # --- nominal weight and alphaS tensor weights ---
     if dataset.is_data:
@@ -276,39 +290,54 @@ def build_graph(df, dataset):
         df = theory_corrections.define_theory_weights_and_corrs(
             df,dataset.name, corr_helpers, args, helicity_smoothing_helpers=helicity_smoothing_helpers,
         )
-        df = df.Define(
-            "gen_w_y",
-            """
-            int best = -1;
-            double best_pt = -1.0;
-            for (int i = 0; i < nGenPart; ++i) {
-                const bool isW = std::abs(GenPart_pdgId[i]) == 24;
-                const bool isLastCopy = (GenPart_statusFlags[i] & (1 << 13));
+        # df = df.Define(
+        #     "gen_w_y",
+        #     """
+        #     int best = -1;
+        #     double best_pt = -1.0;
+        #     for (int i = 0; i < nGenPart; ++i) {
+        #         const bool isW = std::abs(GenPart_pdgId[i]) == 24;
+        #         const bool isLastCopy = (GenPart_statusFlags[i] & (1 << 13));
 
-                if (isW && isLastCopy && GenPart_pt[i] > best_pt) {
-                    best = i;
-                    best_pt = GenPart_pt[i];
-                }
-            }
-            if (best < 0) {
-                return -999.0;
-            }
-            ROOT::Math::PtEtaPhiMVector gen_w_p4(
-                GenPart_pt[best],
-                GenPart_eta[best],
-                GenPart_phi[best],
-                GenPart_mass[best]
-            );
-            const double E = gen_w_p4.E();
-            const double pz = gen_w_p4.Pz();
-            const double num = E + pz;
-            const double den = E - pz;
-            if (num <= 0.0 || den <= 0.0) {
-                return -999.0;
-            }
-            return 0.5 * std::log(num / den);
-            """
-        )
+        #         if (isW && isLastCopy && GenPart_pt[i] > best_pt) {
+        #             best = i;
+        #             best_pt = GenPart_pt[i];
+        #         }
+        #     }
+        #     if (best < 0) {
+        #         return -999.0;
+        #     }
+        #     ROOT::Math::PtEtaPhiMVector gen_w_p4(
+        #         GenPart_pt[best],
+        #         GenPart_eta[best],
+        #         GenPart_phi[best],
+        #         GenPart_mass[best]
+        #     );
+        #     const double E = gen_w_p4.E();
+        #     const double pz = gen_w_p4.Pz();
+        #     const double num = E + pz;
+        #     const double den = E - pz;
+        #     if (num <= 0.0 || den <= 0.0) {
+        #         return -999.0;
+        #     }
+        #     return 0.5 * std::log(num / den);
+        #     """
+        # )
+
+    # ------------------ ABCD cut -----------------------------------
+    abcd_dxy_cut = 0.01
+    abcd_relIso_cut = 0.5
+    df_A = df.Filter(f"mu_abs_dxy >= {abcd_dxy_cut} && mu_relIso >= {abcd_relIso_cut}",
+    "ABCD region A: high dxy, high relIso")
+    df_B = df.Filter(
+        f"mu_abs_dxy >= {abcd_dxy_cut} && mu_relIso < {abcd_relIso_cut}",
+        "ABCD region B: high dxy, low relIso")
+    df_C = df.Filter(
+        f"mu_abs_dxy < {abcd_dxy_cut} && mu_relIso >= {abcd_relIso_cut}",
+        "ABCD region C: low dxy, high relIso")
+    df_D = df.Filter(
+        f"mu_abs_dxy < {abcd_dxy_cut} && mu_relIso < {abcd_relIso_cut}",
+        "ABCD region D/SR: low dxy, low relIso")
 
     # ===========
     # Histograms 
@@ -323,8 +352,8 @@ def build_graph(df, dataset):
     hist_mu_phi = df.HistoBoost("mu_phi", [axis_phi], ["mu_phi", "nominal_weight"])
     hist_mu_charge = df.HistoBoost("mu_charge", [axis_mu_charge], ["mu_charge", "nominal_weight"])
     hist_mu_relIso = df.HistoBoost("mu_relIso",[axis_mu_relIso], ["mu_relIso", "nominal_weight"])
-    hist_mu_dxy = df.HistoBoost("mu_dxy",[axis_mu_dxy],["mu_dxy","nominal_weight"])
-    hist_mu_relIso_dxy = df.HistoBoost("mu_relIso_dxy",[axis_mu_relIso, axis_mu_dxy],["mu_relIso", "mu_dxy", "nominal_weight"])
+    hist_mu_dxy = df.HistoBoost("mu_abs_dxy",[axis_mu_abs_dxy],["mu_abs_dxy", "nominal_weight"])
+    hist_mu_absdxy_relIso = df.HistoBoost("mu_absdxy_relIso",[axis_mu_abs_dxy, axis_mu_relIso],["mu_abs_dxy", "mu_relIso", "nominal_weight"])
 
     # ----- MET -----
     hist_met_pt = df.HistoBoost("met_pt", [axis_met_pt], ["met_pt", "nominal_weight"])
@@ -334,6 +363,28 @@ def build_graph(df, dataset):
     hist_w_mt = df.HistoBoost("w_mt", [axis_w_mt], ["w_mt", "nominal_weight"])
     hist_w_pt = df.HistoBoost("w_pt", [axis_w_pt], ["w_pt", "nominal_weight"])
     hist_w_phi = df.HistoBoost("w_phi", [axis_phi], ["w_phi", "nominal_weight"])
+
+    # ------ ABCD cuts -------
+
+    hist_w_pt_A = df_A.HistoBoost("w_pt_A",[axis_w_pt],["w_pt", "nominal_weight"])
+    hist_w_pt_B = df_B.HistoBoost("w_pt_B",[axis_w_pt],["w_pt", "nominal_weight"])
+    hist_w_pt_C = df_C.HistoBoost("w_pt_C",[axis_w_pt],["w_pt", "nominal_weight"])
+    hist_w_pt_D = df_D.HistoBoost("w_pt_D",[axis_w_pt],["w_pt", "nominal_weight"])
+
+    hist_mu_pt_A = df_A.HistoBoost("mu_pt_A",[axis_mu_pt],["mu_pt", "nominal_weight"])
+    hist_mu_pt_B = df_B.HistoBoost("mu_pt_B",[axis_mu_pt],["mu_pt", "nominal_weight"])
+    hist_mu_pt_C = df_C.HistoBoost("mu_pt_C",[axis_mu_pt],["mu_pt", "nominal_weight"])
+    hist_mu_pt_D = df_D.HistoBoost("mu_pt_D",[axis_mu_pt],["mu_pt", "nominal_weight"])
+
+    hist_met_pt_A = df_A.HistoBoost("met_pt_A",[axis_met_pt],["met_pt", "nominal_weight"])
+    hist_met_pt_B = df_B.HistoBoost("met_pt_B",[axis_met_pt],["met_pt", "nominal_weight"])
+    hist_met_pt_C = df_C.HistoBoost("met_pt_C",[axis_met_pt],["met_pt", "nominal_weight"])
+    hist_met_pt_D = df_D.HistoBoost("met_pt_D",[axis_met_pt],["met_pt", "nominal_weight"])
+
+    # ------ ABCD cuts -------
+    abcd_axes = [axis_abcd_pt,axis_abcd_eta,axis_abcd_charge,axis_abcd_dxy,axis_abcd_relIso]
+    abcd_cols = ["abcd_pt","abcd_eta","abcd_charge","abcd_dxy","abcd_relIso","nominal_weight"]
+    hist_mu_abcd = df.HistoBoost("mu_abcd",abcd_axes, abcd_cols)
 
     # ----- Charge-separated W obs -----
     df_plus = df.Filter("mu_charge > 0")
@@ -378,9 +429,26 @@ def build_graph(df, dataset):
 
         hist_mu_relIso,
         hist_mu_dxy,
-        hist_mu_relIso_dxy,
+        hist_mu_absdxy_relIso,
 
         # hist_nu_disc_case,
+        hist_w_pt_A,
+        hist_w_pt_B,
+        hist_w_pt_C,
+        hist_w_pt_D,
+
+        hist_mu_pt_A, 
+        hist_mu_pt_B,
+        hist_mu_pt_C,
+        hist_mu_pt_D,
+
+        hist_met_pt_A, 
+        hist_met_pt_B,
+        hist_met_pt_C,
+        hist_met_pt_D,
+
+        hist_mu_abcd,
+
     ]
 
     # ===== alphaS variation histograms (MC ONLY) ======
@@ -395,13 +463,16 @@ def build_graph(df, dataset):
             ["w_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
         hist_wpt_mueta_minus_pdfas_corr = df_minus.HistoBoost("wpt_mueta_minus_minnlo_pdfas_Corr",[axis_w_pt, axis_mu_eta], 
             ["w_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
-
+        hist_mu_abcd_pdfas_corr = df.HistoBoost("mu_abcd_minnlo_pdfas_Corr", abcd_axes,
+                ["abcd_pt","abcd_eta","abcd_charge","abcd_dxy","abcd_relIso","pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
+        
         results += [
             hist_w_pt_pdfas_corr,
             hist_w_pt_plus_pdfas_corr,
             hist_w_pt_minus_pdfas_corr,
             hist_wpt_mueta_plus_pdfas_corr,
             hist_wpt_mueta_minus_pdfas_corr,
+            hist_mu_abcd_pdfas_corr,
         ]
 
     # ====== pdf variation histograms (MC ONLY) ========
@@ -416,6 +487,8 @@ def build_graph(df, dataset):
             ["w_pt", "mu_eta", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
         hist_wpt_mueta_minus_pdfvars_corr = df_minus.HistoBoost("wpt_mueta_minus_minnlo_pdfvars_Corr",[axis_w_pt, axis_mu_eta],
             ["w_pt", "mu_eta", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
+        hist_mu_abcd_pdfvars_corr = df.HistoBoost("mu_abcd_minnlo_pdfvars_Corr", abcd_axes, 
+                ["abcd_pt","abcd_eta","abcd_charge","abcd_dxy","abcd_relIso","pdfCT18ZWeights_tensor"], tensor_axes=[axis_pdfvars_vars])
 
         results += [
             hist_w_pt_pdfvars_corr,
@@ -423,17 +496,18 @@ def build_graph(df, dataset):
             hist_w_pt_minus_pdfvars_corr,
             hist_wpt_mueta_plus_pdfvars_corr,
             hist_wpt_mueta_minus_pdfvars_corr,
+            hist_mu_abcd_pdfvars_corr,
         ]
 
     # ===== gen comparison (MC ONLY) ========
-    if not dataset.is_data: 
-        hist_w_y_reco_compare = df.HistoBoost("w_y_reco_compare",[axis_yW_compare],["w_y", "nominal_weight"])
-        hist_gen_w_y_compare = df.HistoBoost("gen_w_y_compare",[axis_yW_compare],["gen_w_y", "nominal_weight"])
+    # if not dataset.is_data: 
+    #     hist_w_y_reco_compare = df.HistoBoost("w_y_reco_compare",[axis_yW_compare],["w_y", "nominal_weight"])
+    #     hist_gen_w_y_compare = df.HistoBoost("gen_w_y_compare",[axis_yW_compare],["gen_w_y", "nominal_weight"])
 
-        results += [
-            hist_w_y_reco_compare,
-            hist_gen_w_y_compare,
-        ]
+    #     results += [
+    #         hist_w_y_reco_compare,
+    #         hist_gen_w_y_compare,
+    #     ]
     
     # ============= Prefiring variations ==================
 
@@ -445,10 +519,8 @@ def build_graph(df, dataset):
                 L1PreFiringWeight_Muon_StatUp/L1PreFiringWeight_Muon_Nom,
                 L1PreFiringWeight_Muon_StatDn/L1PreFiringWeight_Muon_Nom
             };
-
             res[0] = nominal_weight * res[0];
             res[1] = nominal_weight * res[1];
-
             return res;
             """,
         )

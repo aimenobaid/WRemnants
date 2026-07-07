@@ -15,7 +15,7 @@ import numpy as np
 
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
-
+from matplotlib.colors import LogNorm
 
 MC_GROUPS = {
     r"$Z/\gamma^*\rightarrow\mu\mu$": ["Zmumu_2017G", "Zmumu"],
@@ -171,6 +171,183 @@ def make_plot(infile, outdir, histname, xlabel, xlim, lumi, com, logy):
     basename = f"{histname}_nominal"
     plot_tools.save_pdf_and_png(outdir, basename, fig=fig)
 
+
+def draw_abcd_regions(ax, dxyCut=None, relIsoCut=None):
+    if dxyCut is None or relIsoCut is None:
+        return
+
+    xmin, xmax = ax.get_xlim()
+    ymin, ymax = ax.get_ylim()
+
+    # Cut lines
+    ax.axvline(
+        dxyCut,
+        color="black",
+        linestyle="--",
+        linewidth=1.8,
+    )
+
+    ax.axhline(
+        relIsoCut,
+        color="black",
+        linestyle="--",
+        linewidth=1.8,
+    )
+
+    # Text positions: centers of the four visible regions
+    x_low = 0.5 * (xmin + dxyCut)
+    x_high = 0.5 * (dxyCut + xmax)
+    y_low = 0.5 * (ymin + relIsoCut)
+    y_high = 0.5 * (relIsoCut + ymax)
+
+    text_style = dict(
+        fontsize=18,
+        fontweight="bold",
+        color="black",
+        ha="center",
+        va="center",
+        bbox=dict(facecolor="white", alpha=0.75, edgecolor="none"),
+    )
+
+    ax.text(x_high, y_high, "A", **text_style)
+    ax.text(x_high, y_low,  "B", **text_style)
+    ax.text(x_low,  y_high, "C", **text_style)
+    ax.text(x_low,  y_low,  "D / SR", **text_style)
+
+    # Optional small labels for the cuts
+    ax.text(
+        dxyCut,
+        ymax,
+        rf"$|d_{{xy}}|={dxyCut:g}$ cm",
+        ha="right",
+        va="top",
+        rotation=90,
+        fontsize=11,
+        bbox=dict(facecolor="white", alpha=0.65, edgecolor="none"),
+    )
+
+    ax.text(
+        xmax,
+        relIsoCut,
+        rf"RelIso={relIsoCut:g}",
+        ha="right",
+        va="bottom",
+        fontsize=11,
+        bbox=dict(facecolor="white", alpha=0.65, edgecolor="none"),
+    )
+
+def make_2d_datamc_plot(
+    infile,
+    outdir,
+    histname,
+    xlabel,
+    ylabel,
+    xlim,
+    ylim,
+    lumi,
+    com,
+    logz,
+    relIsoCut=None,
+    dxyCut=None,
+):
+    os.makedirs(outdir, exist_ok=True)
+
+    results = load_results(infile)
+    print("Available samples:", samples_in_file(results))
+
+    data_hist = get_data_hist(results, histname)
+    mc_hists, mc_labels = get_mc_stack(results, histname)
+
+    if len(data_hist.axes) != 2:
+        raise RuntimeError(
+            f"Histogram {histname} has {len(data_hist.axes)} axes, but dataMC2D expects 2D."
+        )
+
+    mc_hist = None
+    for h in mc_hists:
+        mc_hist = h.copy() if mc_hist is None else mc_hist + h
+
+    xedges = np.asarray(data_hist.axes[0].edges, dtype=float)
+    yedges = np.asarray(data_hist.axes[1].edges, dtype=float)
+
+    data_vals = np.asarray(data_hist.values(flow=False), dtype=float)
+    mc_vals = np.asarray(mc_hist.values(flow=False), dtype=float)
+
+    ratio_vals = np.divide(
+        data_vals,
+        mc_vals,
+        out=np.full_like(data_vals, np.nan, dtype=float),
+        where=mc_vals != 0,
+    )
+
+    plots = [
+        ("data", data_vals, "Data events/bin", logz),
+        ("mc", mc_vals, "MC events/bin", logz),
+        ("dataMC_ratio", ratio_vals, "Data/MC", False),
+    ]
+
+    for tag, values, zlabel, use_log in plots:
+        fig, ax = plt.subplots(figsize=(9.0, 8.0))
+
+        if use_log:
+            values_to_plot = np.ma.masked_where(values <= 0, values)
+            norm = LogNorm()
+        else:
+            values_to_plot = np.ma.masked_invalid(values)
+            norm = None
+
+        mesh = ax.pcolormesh(
+            xedges,
+            yedges,
+            values_to_plot.T,
+            shading="auto",
+            norm=norm,
+        )
+
+        cbar = fig.colorbar(mesh, ax=ax)
+        cbar.set_label(zlabel, fontsize=14)
+
+        ax.set_xlabel(xlabel if xlabel else data_hist.axes[0].name, fontsize=14)
+        ax.set_ylabel(ylabel if ylabel else data_hist.axes[1].name, fontsize=14)
+
+        if xlim is not None:
+            ax.set_xlim(*xlim)
+
+        if ylim is not None:
+            ax.set_ylim(*ylim)
+
+        draw_abcd_regions(
+            ax,
+            dxyCut=dxyCut,
+            relIsoCut=relIsoCut,
+        )
+
+
+        if tag == "dataMC_ratio":
+            mesh.set_clim(0.5, 1.5)
+
+        ax.tick_params(axis="both", which="both", direction="in", top=True, right=True)
+        ax.minorticks_on()
+
+        hep.cms.label(
+            ax=ax,
+            label="Preliminary",
+            data=True,
+            lumi=lumi,
+            com=com,
+            loc=0,
+        )
+
+        fig.tight_layout()
+
+        suffix = "nocuts"
+
+        if dxyCut is not None and relIsoCut is not None:
+            suffix = f"abcd_dxy{dxyCut:g}_relIso{relIsoCut:g}"
+            suffix = suffix.replace(".", "p")
+
+        basename = f"{histname}_{tag}_2D_{suffix}"
+        plot_tools.save_pdf_and_png(outdir, basename, fig=fig)
 
 def resolve_variation_histname(histname, variation):
     suffix = f"_{variation}"
@@ -555,7 +732,7 @@ def main():
     parser.add_argument("--com", default="5.02")
     parser.add_argument(
         "--mode",
-        choices=["dataMC", "alphaS", "pdf"],
+        choices=["dataMC", "dataMC2D", "alphaS", "pdf"],
         default="dataMC",
         help="dataMC for nominal plots, alphaS/pdf for variation templates",
     )
@@ -575,6 +752,12 @@ def main():
         action="store_true",
         help="Draw individual PDF-member ratio lines behind the PDF envelope",
     )
+
+    parser.add_argument("--ylabel", default=None)
+    parser.add_argument("--ylim", nargs=2, type=float, default=None)
+    parser.add_argument("--logz", action="store_true")
+    parser.add_argument("--relIsoCut", type=float, default=None)
+    parser.add_argument("--dxyCut", type=float, default=None)
 
     args = parser.parse_args()
 
@@ -615,7 +798,21 @@ def main():
             shape_norm=not args.rawRatio,
             pdf_lines=args.pdfLines,
         )
-
+    elif args.mode == "dataMC2D":
+        make_2d_datamc_plot(
+            args.infile,
+            args.outdir,
+            args.hist,
+            args.xlabel,
+            args.ylabel,
+            args.xlim,
+            args.ylim,
+            args.lumi,
+            args.com,
+            args.logz,
+            relIsoCut=args.relIsoCut,
+            dxyCut=args.dxyCut,
+    )
 
 if __name__ == "__main__":
     main()
