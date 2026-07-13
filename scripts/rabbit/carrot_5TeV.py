@@ -183,9 +183,7 @@ def make_nonprompt_template(h_data, prompt_hists, floor):
     view_np = h_nonprompt.view(flow=False)
 
     if not hasattr(view_np, "value"):
-        raise RuntimeError(
-            "Expected weighted histogram storage with .value/.variance for nonprompt template."
-        )
+        raise RuntimeError("Expected weighted histogram storage with .value/.variance for nonprompt template.")
 
     for proc, h_prompt in prompt_hists.items():
         print_flush(f"Subtracting MC from nonprompt seed: {proc}")
@@ -193,15 +191,12 @@ def make_nonprompt_template(h_data, prompt_hists, floor):
         if h_prompt.axes.name != h_nonprompt.axes.name:
             raise RuntimeError(
                 f"Axis mismatch while building nonprompt for {proc}: "
-                f"data axes={h_nonprompt.axes.name}, prompt axes={h_prompt.axes.name}"
-            )
+                f"data axes={h_nonprompt.axes.name}, prompt axes={h_prompt.axes.name}")
 
         view_prompt = h_prompt.view(flow=False)
 
         if not hasattr(view_prompt, "value"):
-            raise RuntimeError(
-                f"Prompt histogram for {proc} does not have weighted storage."
-            )
+            raise RuntimeError(f"Prompt histogram for {proc} does not have weighted storage.")
 
         view_np.value[...] = view_np.value - view_prompt.value
 

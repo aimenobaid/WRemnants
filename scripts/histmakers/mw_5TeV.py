@@ -126,8 +126,9 @@ axis_yW_compare = hist.axis.Regular(100, -5.0, 5.0, name="yW_compare", underflow
 axis_abcd_pt = hist.axis.Regular(26, 18, 44,name="pt",underflow=False,overflow=False)
 axis_abcd_eta = hist.axis.Regular(48, -2.4, 2.4,name="eta",underflow=False,overflow=False)
 axis_abcd_charge = hist.axis.Regular(2, -2, 2,name="charge",underflow=False,overflow=False)
-axis_abcd_dxy = hist.axis.Variable([0.0, 0.02, 1.0],name="dxy",underflow=False,overflow=False)
-axis_abcd_relIso = hist.axis.Variable([0.0, 0.5, 10.0],name="relIso",underflow=False,overflow=False)
+axis_abcd_dxy = hist.axis.Variable([0.0, 0.015, 1.0],name="dxy",underflow=False,overflow=False)
+axis_abcd_relIso = hist.axis.Variable([0.0, 0.4, 10.0],name="relIso",underflow=False,overflow=False)
+axis_wpt_abcd_pt = hist.axis.Regular(80, 0, 80, name="w_pt", underflow=False, overflow=False)
 
 # =====================
 # Main graph building 
@@ -162,11 +163,23 @@ def build_graph(df, dataset):
     # ------ MET kinematics ------
     # For now using stored NanoAOD MET directly. 
     # can replace with recoil-corrected MET from recoilHelper.recoil_W later.
-    df = df.Alias("MET_corr_rec_pt", "MET_pt")
-    df = df.Alias("MET_corr_rec_phi", "MET_phi")
+    # df = df.Alias("MET_corr_rec_pt", "MET_pt")
+    # df = df.Alias("MET_corr_rec_phi", "MET_phi")
+
     df = (
-        df.Define("met_pt", "MET_corr_rec_pt")
-          .Define("met_phi", "MET_corr_rec_phi")
+        # df.Define("met_pt", "MET_corr_rec_pt")
+        #   .Define("met_phi", "MET_corr_rec_phi")
+
+        #   .Define("puppi_met_pt", "PuppiMET_pt")
+        #   .Define("puppi_met_phi", "PuppiMET_phi")
+
+        # Resolution deep met
+        df.Define("deepmet_reso_pt", "DeepMETResolutionTune_pt") 
+          .Define("deepmet_reso_phi", "DeepMETResolutionTune_phi")
+
+        # # Response DEEP MET
+        #   .Define("deepmet_resp_pt", "DeepMETResponseTune_pt")
+        #   .Define("deepmet_resp_phi", "DeepMETResponseTune_phi")
     )
     # df = df.Filter("met_pt > 25", "MET requirement") 
 
@@ -193,15 +206,15 @@ def build_graph(df, dataset):
     # ------- W transverse obs --------
     df = (
         df.Define("dphi_mu_met",
-            "std::atan2(std::sin(mu_phi - met_phi), std::cos(mu_phi - met_phi))")
+            "std::atan2(std::sin(mu_phi - deepmet_reso_phi), std::cos(mu_phi - deepmet_reso_phi))")
           .Define("w_mt",
-              "std::sqrt(2.0 * mu_pt * met_pt * (1.0 - std::cos(dphi_mu_met)))")
+              "std::sqrt(2.0 * mu_pt * deepmet_reso_pt * (1.0 - std::cos(dphi_mu_met)))")
           .Define("mu_px", "mu_pt * std::cos(mu_phi)")
           .Define("mu_py", "mu_pt * std::sin(mu_phi)")
           .Define("mu_pz", "mu_p4.Pz()")
           .Define("mu_E", "mu_p4.E()")
-          .Define("met_px", "met_pt * std::cos(met_phi)")
-          .Define("met_py", "met_pt * std::sin(met_phi)")
+          .Define("met_px", "deepmet_reso_pt * std::cos(deepmet_reso_phi)")
+          .Define("met_py", "deepmet_reso_pt * std::sin(deepmet_reso_phi)")
           .Define("w_px", "mu_px + met_px")
           .Define("w_py", "mu_py + met_py")
           .Define("w_pt", "std::sqrt(w_px*w_px + w_py*w_py)")
@@ -212,12 +225,12 @@ def build_graph(df, dataset):
             const double mW = 80.379;
             const double ptl2 = mu_pt * mu_pt;
             const double A = mW*mW + 2.0*(mu_px*met_px + mu_py*met_py);
-            return A*A - 4.0*ptl2*met_pt*met_pt;
+            return A*A - 4.0*ptl2*deepmet_reso_pt*deepmet_reso_pt;
             """)
           .Define("met_pt_for_w_y",
             """
             const double mW = 80.379;
-            const double met = static_cast<double>(met_pt);
+            const double met = static_cast<double>(deepmet_reso_pt);
             if (nu_disc >= 0.0) {
                 return met;
             }
@@ -238,7 +251,7 @@ def build_graph(df, dataset):
             }
 
             const double A = mW*mW + 2.0*(mu_px*met_px + mu_py*met_py);
-            const double disc = A*A - 4.0*ptl2*met_pt*met_pt;
+            const double disc = A*A - 4.0*ptl2*deepmet_reso_pt*deepmet_reso_pt;
 
             if (disc >= 0.0) {
                 const double sqrt_disc = std::sqrt(disc);
@@ -253,8 +266,8 @@ def build_graph(df, dataset):
 
             // Negative-discriminant case:
             // rescale neutrino pT so that mT(W) = mW, giving one real pz solution.
-            const double met_px_use = met_pt_for_w_y * std::cos(met_phi);
-            const double met_py_use = met_pt_for_w_y * std::sin(met_phi);
+            const double met_px_use = met_pt_for_w_y * std::cos(deepmet_reso_phi);
+            const double met_py_use = met_pt_for_w_y * std::sin(deepmet_reso_phi);
             const double A_projected = mW*mW + 2.0*(mu_px*met_px_use + mu_py*met_py_use);
             return (A_projected * mu_pz)/(2.0*ptl2);
             """)
@@ -325,8 +338,8 @@ def build_graph(df, dataset):
         # )
 
     # ------------------ ABCD cut -----------------------------------
-    abcd_dxy_cut = 0.01
-    abcd_relIso_cut = 0.5
+    abcd_dxy_cut = 0.015
+    abcd_relIso_cut = 0.4
     df_A = df.Filter(f"mu_abs_dxy >= {abcd_dxy_cut} && mu_relIso >= {abcd_relIso_cut}",
     "ABCD region A: high dxy, high relIso")
     df_B = df.Filter(
@@ -349,15 +362,15 @@ def build_graph(df, dataset):
     hist_nLepton = df.HistoBoost("nLepton", [axis_nLepton], ["nLepton", "nominal_weight"])
     hist_mu_pt = df.HistoBoost("mu_pt", [axis_mu_pt], ["mu_pt", "nominal_weight"])
     hist_mu_eta = df.HistoBoost("mu_eta", [axis_mu_eta], ["mu_eta", "nominal_weight"])
-    hist_mu_phi = df.HistoBoost("mu_phi", [axis_phi], ["mu_phi", "nominal_weight"])
+    # hist_mu_phi = df.HistoBoost("mu_phi", [axis_phi], ["mu_phi", "nominal_weight"])
     hist_mu_charge = df.HistoBoost("mu_charge", [axis_mu_charge], ["mu_charge", "nominal_weight"])
     hist_mu_relIso = df.HistoBoost("mu_relIso",[axis_mu_relIso], ["mu_relIso", "nominal_weight"])
     hist_mu_dxy = df.HistoBoost("mu_abs_dxy",[axis_mu_abs_dxy],["mu_abs_dxy", "nominal_weight"])
     hist_mu_absdxy_relIso = df.HistoBoost("mu_absdxy_relIso",[axis_mu_abs_dxy, axis_mu_relIso],["mu_abs_dxy", "mu_relIso", "nominal_weight"])
 
     # ----- MET -----
-    hist_met_pt = df.HistoBoost("met_pt", [axis_met_pt], ["met_pt", "nominal_weight"])
-    hist_met_phi = df.HistoBoost("met_phi", [axis_phi], ["met_phi", "nominal_weight"])
+    # hist_met_pt = df.HistoBoost("met_pt", [axis_met_pt], ["met_pt", "nominal_weight"])
+    # hist_met_phi = df.HistoBoost("met_phi", [axis_phi], ["met_phi", "nominal_weight"])
 
     # ---- W transverse observables ----
     hist_w_mt = df.HistoBoost("w_mt", [axis_w_mt], ["w_mt", "nominal_weight"])
@@ -376,15 +389,34 @@ def build_graph(df, dataset):
     hist_mu_pt_C = df_C.HistoBoost("mu_pt_C",[axis_mu_pt],["mu_pt", "nominal_weight"])
     hist_mu_pt_D = df_D.HistoBoost("mu_pt_D",[axis_mu_pt],["mu_pt", "nominal_weight"])
 
-    hist_met_pt_A = df_A.HistoBoost("met_pt_A",[axis_met_pt],["met_pt", "nominal_weight"])
-    hist_met_pt_B = df_B.HistoBoost("met_pt_B",[axis_met_pt],["met_pt", "nominal_weight"])
-    hist_met_pt_C = df_C.HistoBoost("met_pt_C",[axis_met_pt],["met_pt", "nominal_weight"])
-    hist_met_pt_D = df_D.HistoBoost("met_pt_D",[axis_met_pt],["met_pt", "nominal_weight"])
+    # hist_met_pt_A = df_A.HistoBoost("met_pt_A",[axis_met_pt],["met_pt", "nominal_weight"])
+    # hist_met_pt_B = df_B.HistoBoost("met_pt_B",[axis_met_pt],["met_pt", "nominal_weight"])
+    # hist_met_pt_C = df_C.HistoBoost("met_pt_C",[axis_met_pt],["met_pt", "nominal_weight"])
+    # hist_met_pt_D = df_D.HistoBoost("met_pt_D",[axis_met_pt],["met_pt", "nominal_weight"])
+
+    # hist_puppi_met_pt_A = df_A.HistoBoost("puppi_met_pt_A", [axis_met_pt], ["puppi_met_pt", "nominal_weight"])
+    # hist_puppi_met_pt_B = df_B.HistoBoost("puppi_met_pt_B", [axis_met_pt], ["puppi_met_pt", "nominal_weight"])
+    # hist_puppi_met_pt_C = df_C.HistoBoost("puppi_met_pt_C", [axis_met_pt], ["puppi_met_pt", "nominal_weight"])
+    # hist_puppi_met_pt_D = df_D.HistoBoost("puppi_met_pt_D", [axis_met_pt], ["puppi_met_pt", "nominal_weight"])
+    
+    hist_deepmet_reso_pt_A = df_A.HistoBoost("deepmet_reso_pt_A", [axis_met_pt], ["deepmet_reso_pt", "nominal_weight"])
+    hist_deepmet_reso_pt_B = df_B.HistoBoost("deepmet_reso_pt_B", [axis_met_pt], ["deepmet_reso_pt", "nominal_weight"])
+    hist_deepmet_reso_pt_C = df_C.HistoBoost("deepmet_reso_pt_C", [axis_met_pt], ["deepmet_reso_pt", "nominal_weight"])
+    hist_deepmet_reso_pt_D = df_D.HistoBoost("deepmet_reso_pt_D", [axis_met_pt], ["deepmet_reso_pt", "nominal_weight"])
+
+    # hist_deepmet_resp_pt_A = df_A.HistoBoost("deepmet_resp_pt_A", [axis_met_pt], ["deepmet_resp_pt", "nominal_weight"])
+    # hist_deepmet_resp_pt_B = df_B.HistoBoost("deepmet_resp_pt_B", [axis_met_pt], ["deepmet_resp_pt", "nominal_weight"])
+    # hist_deepmet_resp_pt_C = df_C.HistoBoost("deepmet_resp_pt_C", [axis_met_pt], ["deepmet_resp_pt", "nominal_weight"])
+    # hist_deepmet_resp_pt_D = df_D.HistoBoost("deepmet_resp_pt_D", [axis_met_pt], ["deepmet_resp_pt", "nominal_weight"])
 
     # ------ ABCD cuts -------
     abcd_axes = [axis_abcd_pt,axis_abcd_eta,axis_abcd_charge,axis_abcd_dxy,axis_abcd_relIso]
     abcd_cols = ["abcd_pt","abcd_eta","abcd_charge","abcd_dxy","abcd_relIso","nominal_weight"]
     hist_mu_abcd = df.HistoBoost("mu_abcd",abcd_axes, abcd_cols)
+
+    wpt_abcd_axes = [axis_wpt_abcd_pt,axis_abcd_eta,axis_abcd_charge,axis_abcd_dxy,axis_abcd_relIso]
+    wpt_abcd_cols = ["w_pt","abcd_eta","abcd_charge","abcd_dxy","abcd_relIso","nominal_weight"]
+    hist_wpt_abcd = df.HistoBoost("wpt_abcd",wpt_abcd_axes,wpt_abcd_cols)
 
     # ----- Charge-separated W obs -----
     df_plus = df.Filter("mu_charge > 0")
@@ -410,13 +442,14 @@ def build_graph(df, dataset):
         hist_mu_pt,
         hist_mu_eta,
         hist_mu_charge,
-        hist_met_pt,
+        # hist_met_pt,
         hist_mupt_eta_plus,
         hist_mupt_eta_minus,
         hist_w_mt,
         hist_w_pt,
         hist_w_pt_plus,
-        hist_w_pt_minus,
+        hist_w_pt_minus,\
+        
         hist_wpt_mueta_plus,
         hist_wpt_mueta_minus,
 
@@ -442,13 +475,28 @@ def build_graph(df, dataset):
         hist_mu_pt_C,
         hist_mu_pt_D,
 
-        hist_met_pt_A, 
-        hist_met_pt_B,
-        hist_met_pt_C,
-        hist_met_pt_D,
+        # hist_met_pt_A, 
+        # hist_met_pt_B,
+        # hist_met_pt_C,
+        # hist_met_pt_D,
+
+        # hist_puppi_met_pt_A,
+        # hist_puppi_met_pt_B,
+        # hist_puppi_met_pt_C,
+        # hist_puppi_met_pt_D,
+
+        hist_deepmet_reso_pt_A,
+        hist_deepmet_reso_pt_B,
+        hist_deepmet_reso_pt_C,
+        hist_deepmet_reso_pt_D,
+
+        # hist_deepmet_resp_pt_A,
+        # hist_deepmet_resp_pt_B,
+        # hist_deepmet_resp_pt_C,
+        # hist_deepmet_resp_pt_D,
 
         hist_mu_abcd,
-
+        hist_wpt_abcd,
     ]
 
     # ===== alphaS variation histograms (MC ONLY) ======
@@ -465,6 +513,12 @@ def build_graph(df, dataset):
             ["w_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
         hist_mu_abcd_pdfas_corr = df.HistoBoost("mu_abcd_minnlo_pdfas_Corr", abcd_axes,
                 ["abcd_pt","abcd_eta","abcd_charge","abcd_dxy","abcd_relIso","pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
+        hist_mupt_eta_plus_pdfas_corr = df_plus.HistoBoost("mupt_eta_plus_minnlo_pdfas_Corr",[axis_mu_pt, axis_mu_eta],
+            ["mu_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
+        hist_mupt_eta_minus_pdfas_corr = df_minus.HistoBoost("mupt_eta_minus_minnlo_pdfas_Corr",[axis_mu_pt, axis_mu_eta],
+            ["mu_pt", "mu_eta", "pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
+        hist_wpt_abcd_pdfas_corr = df.HistoBoost("wpt_abcd_minnlo_pdfas_Corr",wpt_abcd_axes,
+            ["w_pt","abcd_eta","abcd_charge","abcd_dxy","abcd_relIso","pdfCT18ZASWeights_tensor"],tensor_axes=[axis_pdfas_vars])
         
         results += [
             hist_w_pt_pdfas_corr,
@@ -473,6 +527,9 @@ def build_graph(df, dataset):
             hist_wpt_mueta_plus_pdfas_corr,
             hist_wpt_mueta_minus_pdfas_corr,
             hist_mu_abcd_pdfas_corr,
+            hist_wpt_abcd_pdfas_corr,
+            hist_mupt_eta_plus_pdfas_corr,
+            hist_mupt_eta_minus_pdfas_corr,
         ]
 
     # ====== pdf variation histograms (MC ONLY) ========
@@ -489,6 +546,12 @@ def build_graph(df, dataset):
             ["w_pt", "mu_eta", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
         hist_mu_abcd_pdfvars_corr = df.HistoBoost("mu_abcd_minnlo_pdfvars_Corr", abcd_axes, 
                 ["abcd_pt","abcd_eta","abcd_charge","abcd_dxy","abcd_relIso","pdfCT18ZWeights_tensor"], tensor_axes=[axis_pdfvars_vars])
+        hist_mupt_eta_plus_pdfvars_corr = df_plus.HistoBoost("mupt_eta_plus_minnlo_pdfvars_Corr",[axis_mu_pt, axis_mu_eta],
+            ["mu_pt", "mu_eta", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
+        hist_mupt_eta_minus_pdfvars_corr = df_minus.HistoBoost("mupt_eta_minus_minnlo_pdfvars_Corr",[axis_mu_pt, axis_mu_eta],
+            ["mu_pt", "mu_eta", "pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
+        hist_wpt_abcd_pdfvars_corr = df.HistoBoost("wpt_abcd_minnlo_pdfvars_Corr",wpt_abcd_axes,
+            ["w_pt","abcd_eta","abcd_charge","abcd_dxy","abcd_relIso","pdfCT18ZWeights_tensor"],tensor_axes=[axis_pdfvars_vars])
 
         results += [
             hist_w_pt_pdfvars_corr,
@@ -497,6 +560,9 @@ def build_graph(df, dataset):
             hist_wpt_mueta_plus_pdfvars_corr,
             hist_wpt_mueta_minus_pdfvars_corr,
             hist_mu_abcd_pdfvars_corr,
+            hist_wpt_abcd_pdfvars_corr,
+            hist_mupt_eta_plus_pdfvars_corr,
+            hist_mupt_eta_minus_pdfvars_corr,
         ]
 
     # ===== gen comparison (MC ONLY) ========
