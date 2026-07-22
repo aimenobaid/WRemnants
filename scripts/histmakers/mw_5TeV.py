@@ -114,7 +114,6 @@ axis_w_y = hist.axis.Regular(48, -2.4, 2.4,
     name="w_y", underflow=False, overflow=True)
 
 axis_prefire_tensor = hist.axis.Integer(0, 2, name="prefire_variation", underflow=False, overflow=False)
-# making the W MiNNLO/CT18Z variation histograms look like the Z_Corr histograms.
 axis_pdfas_vars = hist.axis.StrCategory(["central", "pdfCT18ZNNLO_as_0120", "pdfCT18ZNNLO_as_0116"],name="vars")
 axis_pdfvars_vars = hist.axis.StrCategory(ct18z_pdf_labels,name="vars")
 
@@ -377,6 +376,7 @@ def build_graph(df, dataset):
     hist_w_mt = df.HistoBoost("w_mt", [axis_w_mt], ["w_mt", "nominal_weight"])
     hist_w_pt = df.HistoBoost("w_pt", [axis_w_pt], ["w_pt", "nominal_weight"])
     hist_w_phi = df.HistoBoost("w_phi", [axis_phi], ["w_phi", "nominal_weight"])
+    hist_w_y = df.HistoBoost("w_y",[axis_w_y],["w_y","nominal_weight"])
 
     # ------ ABCD cuts -------
 
@@ -430,7 +430,8 @@ def build_graph(df, dataset):
         hist_w_mt,
         hist_w_pt,
         hist_w_pt_plus,
-        hist_w_pt_minus,\
+        hist_w_pt_minus,
+        hist_w_y,
         
         hist_wpt_mueta_plus,
         hist_wpt_mueta_minus,

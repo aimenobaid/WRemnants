@@ -29,82 +29,28 @@ parser.add_argument("infile", help="Input WRemnants HDF5 file")
 parser.add_argument("-o", "--output", default="./", help="Output directory")
 parser.add_argument("--outname", default="my_tensor", help="Output tensor file name")
 parser.add_argument("--histName", default="ptll", help="Nominal histogram name")
-parser.add_argument(
-    "--analysis",
-    choices=["z", "w"],
-    default="z",
-    help="Analysis mode. Only controls default process filters.",
-)
-parser.add_argument(
-    "--procFilters",
-    nargs="*",
-    default=None,
-    help="Processes to include. Defaults depend on --analysis.",
-)
-parser.add_argument(
-    "--signalFilters",
-    nargs="*",
-    default=None,
-    help="Processes receiving PDF/alphaS systematics. Defaults depend on --analysis.",
-)
-parser.add_argument(
-    "--asimovMode",
-    choices=["first", "sum"],
-    default="first",
-    help="first = old behavior, use first MC process as Asimov data; sum = sum selected MC processes.",
-)
+parser.add_argument("--analysis",choices=["z", "w"],default="z",help="Analysis mode. Only controls default process filters.")
+parser.add_argument("--procFilters",nargs="*",default=None,help="Processes to include. Defaults depend on --analysis.")
+parser.add_argument("--signalFilters",nargs="*",default=None,
+    help="Processes receiving PDF/alphaS systematics. Defaults depend on --analysis.",)
+parser.add_argument("--asimovMode",choices=["first", "sum"],default="first",
+    help="first = old behavior, use first MC process as Asimov data; sum = sum selected MC processes.")
 parser.add_argument("--sparse", default=False, action="store_true", help="Make sparse tensor")
-parser.add_argument(
-    "--systematicType",
-    choices=["log_normal", "normal"],
-    default="log_normal",
-    help="Probability density for systematic variations",
-)
-parser.add_argument(
-    "--alphaSUpName",
-    default="pdfCT18ZNNLO_as_0120",
-    help="Name of the alphaS-up variation on the vars axis",
-)
-parser.add_argument(
-    "--alphaSDownName",
-    default="pdfCT18ZNNLO_as_0116",
-    help="Name of the alphaS-down variation on the vars axis",
-)
-parser.add_argument(
-    "--wChargeAxis",
-    action="store_true",
-    help=(
-        "For W only: build a single tensor with a reco charge axis by combining "
-        "<histName>_minus and <histName>_plus into one histogram."
-    ),
-)
-
+parser.add_argument("--systematicType",choices=["log_normal", "normal"],default="log_normal",
+    help="Probability density for systematic variations")
+parser.add_argument("--alphaSUpName",default="pdfCT18ZNNLO_as_0120", help="Name of the alphaS-up variation on the vars axis")
+parser.add_argument("--alphaSDownName",default="pdfCT18ZNNLO_as_0116",
+    help="Name of the alphaS-down variation on the vars axis")
+parser.add_argument("--wChargeAxis",action="store_true",
+    help=("For W only: build a single tensor with a reco charge axis by combining "
+        "<histName>_minus and <histName>_plus into one histogram."))
 # ABCD / data-driven nonprompt options
-parser.add_argument(
-    "--useDataObs",
-    action="store_true",
-    help="Use SingleMuon data as observed data instead of Asimov MC.",
-)
-parser.add_argument(
-    "--dataProcFilter",
-    default="SingleMuon",
-    help="Substring used to find the data process.",
-)
-parser.add_argument(
-    "--addNonprompt",
-    action="store_true",
-    help="Add a synthetic nonprompt process built from data minus selected MC.",
-)
-parser.add_argument(
-    "--nonpromptName",
-    default="nonprompt",
-    help="Name of the synthetic nonprompt process.",
-)
-parser.add_argument(
-    "--nonpromptFloor",
-    type=float,
-    default=1e-6,
-    help="Minimum bin content for the nonprompt template.",
+parser.add_argument("--useDataObs",action="store_true",help="Use SingleMuon data as observed data instead of Asimov MC.")
+parser.add_argument("--dataProcFilter",default="SingleMuon",help="Substring used to find the data process.")
+parser.add_argument("--addNonprompt",action="store_true",help="Add a synthetic unit nonprompt process for SmoothABCD.")
+parser.add_argument("--nonpromptName",default="nonprompt",help="Name of the synthetic nonprompt process.")
+parser.add_argument("--selectAxisBin",nargs=2,action="append",default=[],metavar=("AXIS", "BIN"),
+    help="Select one bin of an axis before writing the Rabbit tensor, e.g. --selectAxisBin w_mt 0.",
 )
 
 args = parser.parse_args()
@@ -154,67 +100,44 @@ def find_one_process(processes, filt):
 
     return matches[0]
 
+def apply_axis_bin_selections(h, selections):
+    h_out = h
 
-def clip_hist_to_floor(h, floor):
-    h = h.copy()
-    view = h.view(flow=False)
+    for axis_name, bin_idx in selections:
+        bin_idx = int(bin_idx)
 
-    if hasattr(view, "value"):
-        mask = view.value <= floor
-        view.value[mask] = floor
+        if axis_name not in h_out.axes.name:
+            raise RuntimeError(
+                f"Cannot select {axis_name}:{bin_idx}; available axes are {h_out.axes.name}"
+            )
 
-        if hasattr(view, "variance") and view.variance is not None:
-            view.variance[mask] = floor
-    else:
-        view[...] = np.where(view > floor, view, floor)
+        h_out = h_out[{axis_name: bin_idx}]
 
-    return h
+    return h_out
 
-
-def make_nonprompt_template(h_data, prompt_hists, floor):
+def make_nonprompt_template(h_data):
     """
-    Build a seed nonprompt template from data minus selected MC.
-
-    This intentionally edits the weighted-histogram values directly, because
-    boost-histogram weighted storage supports addition but may not support
-    direct histogram subtraction through h1 - h2 / h1 -= h2.
+    Build unit nonprompt template for the smoothed ABCD model.
+    The fake estimate = data - prompt MC, used separately with regen_smoothing_params_abcd.py 
+    to initialize SmoothABCD polynomialparameters.
+    
+    with this template, in rabbit we get: nonprompt = 1 * exp(polynomial)
     """
     h_nonprompt = h_data.copy()
     view_np = h_nonprompt.view(flow=False)
 
-    if not hasattr(view_np, "value"):
-        raise RuntimeError("Expected weighted histogram storage with .value/.variance for nonprompt template.")
+    if hasattr(view_np, "value"):
+        view_np.value[...] = 1.0
 
-    for proc, h_prompt in prompt_hists.items():
-        print_flush(f"Subtracting MC from nonprompt seed: {proc}")
-
-        if h_prompt.axes.name != h_nonprompt.axes.name:
-            raise RuntimeError(
-                f"Axis mismatch while building nonprompt for {proc}: "
-                f"data axes={h_nonprompt.axes.name}, prompt axes={h_prompt.axes.name}")
-
-        view_prompt = h_prompt.view(flow=False)
-
-        if not hasattr(view_prompt, "value"):
-            raise RuntimeError(f"Prompt histogram for {proc} does not have weighted storage.")
-
-        view_np.value[...] = view_np.value - view_prompt.value
-
-        if view_np.variance is not None and view_prompt.variance is not None:
-            # Variance of a difference adds: Var(data - MC) = Var(data) + Var(MC)
-            view_np.variance[...] = view_np.variance + view_prompt.variance
-
-    mask = view_np.value <= floor
-    view_np.value[mask] = floor
-
-    if view_np.variance is not None:
-        view_np.variance[mask] = floor
+        if view_np.variance is not None:
+            view_np.variance[...] = 0.0
+    else:
+        view_np[...] = 1.0
 
     total = h_nonprompt.sum().value if hasattr(h_nonprompt.sum(), "value") else h_nonprompt.sum()
-    print_flush(f"Built nonprompt seed template with total yield = {total}")
+    print_flush(f"Built unit nonprompt template with total yield = {total}")
 
     return h_nonprompt
-
 
 def project_to_nominal_axes(h_var, h_nom):
     return h_var.project(*h_nom.axes.name)
@@ -523,7 +446,6 @@ else:
 
 # ------------------------------------------------------------------
 # Old Asimov-only behavior kept here for reference.
-# Do not uncomment this together with the active block below.
 # ------------------------------------------------------------------
 # # -------------------
 # # Build Asimov data
@@ -579,17 +501,32 @@ else:
     h_data_base = h_data
     h_mc_base = h_mc_dict
 
+# ------------------------------
+# Apply axis-bin selections
+# ------------------------------
+if args.selectAxisBin:
+    print_flush(f"Applying axis-bin selections: {args.selectAxisBin}")
+
+    h_data_base = apply_axis_bin_selections(h_data_base, args.selectAxisBin)
+
+    h_mc_base = {
+        proc: apply_axis_bin_selections(h, args.selectAxisBin)
+        for proc, h in h_mc_base.items()
+    }
+
+    print_flush(f"Data axes after selection: {[ax.name for ax in h_data_base.axes]}")
+
+    for proc, h in h_mc_base.items():
+        print_flush(f"{proc} axes after selection: {[ax.name for ax in h.axes]}")
+
+
 # -------------------
-# Build nonprompt seed template
+# Build unit nonprompt template
 # -------------------
 h_nonprompt_base = None
 
 if args.addNonprompt:
-    h_nonprompt_base = make_nonprompt_template(
-        h_data_base,
-        h_mc_base,
-        args.nonpromptFloor,
-    )
+    h_nonprompt_base = make_nonprompt_template(h_data_base)
 
 # ----------------------------------
 # write rabbit tensor
@@ -634,6 +571,9 @@ for proc_name in signal_procs:
         continue
 
     h_pdfvars = h_pdfvars_corr_dict[proc_name]
+
+    if args.selectAxisBin:
+        h_pdfvars = apply_axis_bin_selections(h_pdfvars, args.selectAxisBin)
 
     if "vars" not in h_pdfvars.axes.name:
         print_flush(
@@ -686,6 +626,9 @@ for proc_name in signal_procs:
 
     h_pdfas = h_pdfas_corr_dict[proc_name]
 
+    if args.selectAxisBin:
+        h_pdfas = apply_axis_bin_selections(h_pdfas, args.selectAxisBin)
+
     if "vars" not in h_pdfas.axes.name:
         print_flush(
             f"Warning: pdfas histogram for {proc_name} has no vars axis. "
@@ -696,7 +639,7 @@ for proc_name in signal_procs:
     labels = vars_labels(h_pdfas)
     print_flush(f"{proc_name} pdfas labels: {labels}")
 
-    # Preferred Z-like labels, with a fallback for older W test files.
+    # Z-like labels.
     var_up = choose_existing_label(
         labels,
         [args.alphaSUpName, "alphaSUp"],
